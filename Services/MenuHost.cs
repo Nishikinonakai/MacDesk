@@ -61,11 +61,17 @@ internal static class MenuHost
         // 秒杀（真机竞态实测）。旧菜单开着时新右键会被 OS 当"点击外部"自动关掉（菜单有
         // 前台权限），host 串行循环随后自然接到本请求。
         var payload = $"{verb}{US}{x}{US}{y}{US}{string.Join(US, paths)}";
-        if (TrySend(payload, 800)) return;
+        if (TrySend(payload, 1500)) return;
+
+        // 连不上 ≠ host 死了——它可能只是忙（探针进程/上一个菜单占着串行循环）。
+        // 只有进程真没了才重拉；活着就多等，别把正在干活的 host 杀了（旧版"右键时灵时不灵"元凶）。
+        bool alive;
+        lock (_lock) alive = _host is { HasExited: false };
+        if (alive && TrySend(payload, 4000)) return;
         Log.Write("menu host unreachable, respawning");
         lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
         EnsureSpawned();
-        if (TrySend(payload, 3000)) return;
+        if (TrySend(payload, 5000)) return;
         // 双保险：退化为旧的一次性子进程
         Log.Write("menu host still unreachable, falling back to one-shot helper");
         try
@@ -122,20 +128,29 @@ internal static class MenuHost
                 Native.PostMessage(_ownerHwnd, Native.WM_CANCELMODE, IntPtr.Zero, IntPtr.Zero);
         });
 
-        // 预热：背景菜单扩展在本进程加载（实测安全）；文件项扩展会 fail-fast 带走进程，
-        // 只能用牺牲进程探针（ProbeSafe），顺带把常见类型的判定缓存好。
-        try
+        // 预热放后台线程：管道循环立刻可用（否则预热的几秒里右键请求连不上管道，
+        // 客户端误判 host 死了把它杀掉重拉——旧版右键时灵时不灵的帮凶之一）。
+        // 内容：①背景菜单扩展在本进程加载（实测安全）；②对桌面上所有文件类型跑一遍
+        // 牺牲进程探针（文件项扩展会 fail-fast 带走进程，不能在本进程试），
+        // 之后任何图标的首次右键都不用再付探针延迟。
+        var warm = new Thread(() =>
         {
-            ShellContextMenu.Prewarm(DesktopItemProvider.UserDesktop, _ownerHwnd);
-            Log.Write("menu host prewarmed");
-        }
-        catch (Exception ex) { Log.Write("menu host prewarm failed: " + ex.Message); }
-        try
-        {
-            var sample = Directory.EnumerateFileSystemEntries(DesktopItemProvider.UserDesktop).FirstOrDefault();
-            if (sample != null) ProbeSafe(sample);
-        }
-        catch { }
+            try
+            {
+                ShellContextMenu.Prewarm(DesktopItemProvider.UserDesktop, _ownerHwnd);
+                Log.Write("menu host prewarmed");
+            }
+            catch (Exception ex) { Log.Write("menu host prewarm failed: " + ex.Message); }
+            try
+            {
+                foreach (var entry in Directory.EnumerateFileSystemEntries(DesktopItemProvider.UserDesktop))
+                    ProbeSafe(entry); // 按类型去重，每种只探一次
+                Log.Write("menu host probes done");
+            }
+            catch (Exception ex) { Log.Write("menu host probe sweep failed: " + ex.Message); }
+        }) { IsBackground = true };
+        warm.SetApartmentState(ApartmentState.STA);
+        warm.Start();
 
         while (true)
         {
@@ -170,6 +185,7 @@ internal static class MenuHost
     // ── 文件菜单安全性探针（结果按文件类型缓存） ──────────────
 
     private static readonly Dictionary<string, bool> _safeByKind = new();
+    private static readonly object _probeGate = new(); // 预探针线程与请求线程都会进来，串行化
 
     private static string KindKey(string path)
     {
@@ -182,20 +198,23 @@ internal static class MenuHost
     private static bool ProbeSafe(string path)
     {
         string key = KindKey(path);
-        if (_safeByKind.TryGetValue(key, out bool cached)) return cached;
-        bool safe = false;
-        try
+        lock (_probeGate)
         {
-            var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
-            psi.ArgumentList.Add("--menuprobe");
-            psi.ArgumentList.Add(path);
-            var p = Process.Start(psi)!;
-            safe = p.WaitForExit(8000) && p.ExitCode == 0;
-            if (!p.HasExited) { try { p.Kill(); } catch { } }
+            if (_safeByKind.TryGetValue(key, out bool cached)) return cached;
+            bool safe = false;
+            try
+            {
+                var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+                psi.ArgumentList.Add("--menuprobe");
+                psi.ArgumentList.Add(path);
+                var p = Process.Start(psi)!;
+                safe = p.WaitForExit(8000) && p.ExitCode == 0;
+                if (!p.HasExited) { try { p.Kill(); } catch { } }
+            }
+            catch (Exception ex) { Log.Write("probe spawn failed: " + ex.Message); }
+            _safeByKind[key] = safe;
+            Log.Write($"menu probe [{key}] -> {(safe ? "full native" : "degraded")}");
+            return safe;
         }
-        catch (Exception ex) { Log.Write("probe spawn failed: " + ex.Message); }
-        _safeByKind[key] = safe;
-        Log.Write($"menu probe [{key}] -> {(safe ? "full native" : "degraded")}");
-        return safe;
     }
 }

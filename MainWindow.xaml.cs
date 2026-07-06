@@ -123,6 +123,9 @@ public partial class MainWindow : Window
         RootGrid.MouseMove += OnCanvasMouseMove;
         RootGrid.MouseLeftButtonUp += OnCanvasMouseUp;
         RootGrid.MouseRightButtonUp += OnCanvasRightClick;
+        // 菜单进程抢前台会打断我们的鼠标捕获，此后 MouseLeftButtonUp 永远不来——
+        // 不接这个事件，框选框就"死"在桌面上且 RootGrid 持续劫持后续输入（真机踩坑）
+        RootGrid.LostMouseCapture += (_, _) => EndBand();
         PreviewKeyDown += OnKeyDown;
         TextInput += OnTextInput; // 首字母定位
         // 桌面本体禁用 IME：字母键直接走首字母定位，别被中文输入法拦成拼音候选（重命名框会单独放开）
@@ -427,6 +430,8 @@ public partial class MainWindow : Window
         root.MouseMove += (s, e) => OnIconMouseMove(iv, e);
         root.MouseLeftButtonUp += (s, e) => OnIconMouseUp(iv, e);
         root.MouseRightButtonUp += (s, e) => OnIconRightClick(iv, e);
+        // 捕获被外部打断（菜单进程抢前台等）→ 按下状态清零，否则之后一次悬停划过就会误触发拖拽
+        root.LostMouseCapture += (s, e) => { if (!iv.Dragging) iv.MouseDown = false; };
         return iv;
     }
 
@@ -515,7 +520,12 @@ public partial class MainWindow : Window
 
         // 规范布局是唯一事实来源：重排前全员取有效 Canon（含归属离场显示器的孤儿——推导显示、不回写）
         foreach (var iv in _icons.Values)
+        {
             iv.Canon = Desktop.EffectiveCanon(Path.GetFileName(iv.Entry.Path));
+            // 自愈：拖拽/剪切之外不允许有半透明残留（曾有捕获被打断导致留影卡死的实例）
+            if (iv.Root.Opacity < 1 && !_dragGhosts.Contains(iv) && !_cutIcons.Contains(iv))
+                iv.Root.Opacity = 1;
+        }
 
         var placed = new HashSet<(int, int)>();
 
@@ -674,6 +684,8 @@ public partial class MainWindow : Window
 
     // ── 图标鼠标交互（统一 shell OLE 拖拽） ────────────────────
 
+    private readonly HashSet<IconVisual> _dragGhosts = new(); // 拖拽中留影的图标（自愈时豁免）
+
     private void OnIconMouseDown(IconVisual iv, MouseButtonEventArgs e)
     {
         e.Handled = true;
@@ -707,6 +719,13 @@ public partial class MainWindow : Window
     private void OnIconMouseMove(IconVisual iv, MouseEventArgs e)
     {
         if (!iv.MouseDown || iv.Dragging) return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            // up 事件被别的窗口/菜单吃掉的残留按下态：清零，绝不能拿松开的鼠标开拖拽
+            iv.MouseDown = false;
+            if (iv.Root.IsMouseCaptured) iv.Root.ReleaseMouseCapture();
+            return;
+        }
         var p = e.GetPosition(IconCanvas);
         if (Math.Abs(p.X - iv.DownPos.X) <= 4 && Math.Abs(p.Y - iv.DownPos.Y) <= 4) return;
 
@@ -723,12 +742,13 @@ public partial class MainWindow : Window
         iv.Root.ReleaseMouseCapture();
 
         var (image, hotspot) = RenderDragImage(group, p);
-        foreach (var g in group) g.Root.Opacity = 0.35; // 原位留影 = 拖拽中的"源"状态
+        foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); } // 原位留影
         try { ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
         finally
         {
             foreach (var g in group) g.Root.Opacity = 1;
+            _dragGhosts.Clear();
             iv.Dragging = false;
         }
         // 后续：拖回自己/兄弟窗口 → OnDesktopDrop 重定位；Move 去外部 → FileSystemWatcher 移除图标
@@ -884,6 +904,7 @@ public partial class MainWindow : Window
         CommitRename(); // 点空白 = 提交重命名（mac 行为）
         if (!Keyboard.Modifiers.HasFlag(ModifierKeys.Control)) ClearSelection();
 
+        EndBand(); // 上一个框选可能因捕获被打断而没收尾，先清掉（否则矩形泄漏在 Canvas 上）
         _bandActive = true;
         _bandOrigin = e.GetPosition(IconCanvas);
         _bandRect = new System.Windows.Shapes.Rectangle
@@ -903,6 +924,12 @@ public partial class MainWindow : Window
     private void OnCanvasMouseMove(object sender, MouseEventArgs e)
     {
         if (!_bandActive || _bandRect == null) return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            // 左键早已抬起（up 事件被别的窗口/菜单吃掉）→ 这不是框选，收尾别让框跟着鼠标走
+            EndBand();
+            return;
+        }
         var p = e.GetPosition(IconCanvas);
         var rect = new Rect(_bandOrigin, p);
         Canvas.SetLeft(_bandRect, rect.X);
@@ -919,11 +946,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnCanvasMouseUp(object sender, MouseButtonEventArgs e)
+    private void OnCanvasMouseUp(object sender, MouseButtonEventArgs e) => EndBand();
+
+    /// <summary>结束/清理框选（无论正常松手还是捕获被打断）。可重入。</summary>
+    private void EndBand()
     {
-        if (!_bandActive) return;
+        if (!_bandActive && _bandRect == null) return;
         _bandActive = false;
-        RootGrid.ReleaseMouseCapture();
+        if (RootGrid.IsMouseCaptured) RootGrid.ReleaseMouseCapture();
         if (_bandRect != null) IconCanvas.Children.Remove(_bandRect);
         _bandRect = null;
     }
@@ -931,6 +961,7 @@ public partial class MainWindow : Window
     private void OnCanvasRightClick(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        EndBand(); // 残留框选态会劫持右键路由，先兜底清理
         FocusDesktop();
         ClearSelection();
         var pt = RootGrid.PointToScreen(e.GetPosition(RootGrid));
