@@ -125,6 +125,20 @@ internal static class Native
     public static extern short GetAsyncKeyState(int vKey);
 
     [DllImport("user32.dll")]
+    public static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+
+    public const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassNameW(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+    public static string WindowClass(IntPtr hwnd)
+    {
+        var sb = new System.Text.StringBuilder(128);
+        return GetClassNameW(hwnd, sb, sb.Capacity) > 0 ? sb.ToString() : "?";
+    }
+
+    [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     public const uint WM_NULL = 0x0000;

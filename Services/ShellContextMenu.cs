@@ -390,6 +390,11 @@ internal static class ShellContextMenu
     /// </summary>
     private static int TrackWithRetry(IntPtr hMenu, IntPtr ownerHwnd, int x, int y)
     {
+        // 等鼠标键全部松开再开菜单：菜单在按住的按键正下方"物化"，紧接着的抬起会被判成
+        // 选中菜单项（机主实测：右键图标偶发直接触发 File Locksmith）
+        for (int i = 0; i < 40 && ((GetAsyncKeyState(0x01) | GetAsyncKeyState(0x02)) & 0x8000) != 0; i++)
+            Thread.Sleep(10);
+
         for (int attempt = 0; ; attempt++)
         {
             ForceForeground(ownerHwnd);
@@ -399,7 +404,9 @@ internal static class ShellContextMenu
             if (cmd != 0 || sw.ElapsedMilliseconds > 300 || attempt >= 2) return cmd;
             if ((GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0 ||
                 (GetAsyncKeyState(0x1B) & 0x8000) != 0) return cmd; // 用户真在点/按 Esc = 真取消
-            Log.Write($"menu insta-cancelled in {sw.ElapsedMilliseconds}ms (fg={GetForegroundWindow()}), retrying");
+            var fg = GetForegroundWindow();
+            Log.Write($"menu insta-cancelled in {sw.ElapsedMilliseconds}ms (fg={fg} cls={WindowClass(fg)}), retrying");
+            Thread.Sleep(50); // 给迟到的异步激活一点落地时间，别让它再杀一次
         }
     }
 

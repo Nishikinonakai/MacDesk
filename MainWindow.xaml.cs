@@ -30,6 +30,7 @@ using StringCollection = System.Collections.Specialized.StringCollection;
 using DragEventArgs = System.Windows.DragEventArgs;
 using DragDrop = System.Windows.DragDrop;
 using SystemSounds = System.Media.SystemSounds;
+using FontFamily = System.Windows.Media.FontFamily;
 
 namespace MacDesk;
 
@@ -37,6 +38,8 @@ public partial class MainWindow : Window
 {
     // mac 式网格（DIU）：112×112 方形格（对齐 Finder gridSpacing 实测值）
     private const double CellW = 96, CellH = 104, GapX = 16, GapY = 8; // pitch = 112 × 112
+
+    private static readonly FontFamily LabelFontFamily = new("Segoe UI, Microsoft YaHei UI");
     private const double MarginTop = 14, MarginRight = 14, MarginBottom = 60, MarginLeft = 14;
     private const int IconPx = 256; // 取图尺寸（高分屏 64 DIU × 3x 也够），低分辨率源是白边锯齿的元凶
 
@@ -128,6 +131,11 @@ public partial class MainWindow : Window
         RootGrid.LostMouseCapture += (_, _) => EndBand();
         PreviewKeyDown += OnKeyDown;
         TextInput += OnTextInput; // 首字母定位
+        PreviewMouseRightButtonDown += (_, e) =>
+        {
+            var p = e.GetPosition(IconCanvas);
+            _rightPress = (p, IconAtPoint(p), DateTime.Now);
+        };
         // 桌面本体禁用 IME：字母键直接走首字母定位，别被中文输入法拦成拼音候选（重命名框会单独放开）
         InputMethod.SetIsInputMethodEnabled(this, false);
         DragEnter += OnDesktopDragEnter;
@@ -394,12 +402,18 @@ public partial class MainWindow : Window
             Text = en.DisplayName,
             Foreground = Brushes.White,
             FontSize = 12,
+            // mac 质感：中文落到雅黑 Bold、拉丁走 Segoe UI Semibold（Windows 自带，免费合法）
+            FontFamily = LabelFontFamily,
+            FontWeight = FontWeights.SemiBold,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxHeight = 32,
+            MaxHeight = 34,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
+        // 小字号必须走 Display 模式（对齐像素网格），配合 MoveIcon 的整数坐标吸附——
+        // 亚像素落位是"有的标签清晰有的糊"的元凶
+        TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
         {
             CornerRadius = new CornerRadius(6),
@@ -635,6 +649,9 @@ public partial class MainWindow : Window
 
     private static void MoveIcon(IconVisual iv, double l, double t, bool animated)
     {
+        // 落点吸附整数 DIU：亚像素坐标会让整个图标（尤其文字）渲染发糊
+        l = Math.Round(l);
+        t = Math.Round(t);
         if (animated && !double.IsNaN(Canvas.GetLeft(iv.Root)))
         {
             var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
@@ -678,9 +695,31 @@ public partial class MainWindow : Window
 
     private void FocusDesktop()
     {
+        // 先同步把桌面顶层（Progman 链）请到前台。不这么做的话，本次点击引发的**异步**
+        // 激活会在右键菜单开出之后才落地，把菜单扫掉——"从别的应用切过来后第一下右键
+        // 时灵时不灵"的根源。先到位，后面就没有迟到的激活了。
+        Native.SetForegroundWindow(Native.GetAncestor(_hwnd, Native.GA_ROOT));
         Native.SetFocus(_hwnd);
         Keyboard.Focus(this);
     }
+
+    // 右键按下点快照：按住时的轻微移动不应改变菜单目标/位置（按下压着谁就对谁弹菜单，
+    // 菜单钉在按下点；否则微移后在空白处抬起会误出背景菜单）
+    private (Point Pos, IconVisual? Icon, DateTime At) _rightPress;
+
+    private IconVisual? IconAtPoint(Point pos)
+    {
+        foreach (var iv in _icons.Values)
+        {
+            double l = Canvas.GetLeft(iv.Root), t = Canvas.GetTop(iv.Root);
+            if (double.IsNaN(l) || double.IsNaN(t)) continue;
+            double hgt = iv.Root.ActualHeight > 0 ? iv.Root.ActualHeight : CellH;
+            if (pos.X >= l && pos.X < l + CellW && pos.Y >= t && pos.Y < t + hgt) return iv;
+        }
+        return null;
+    }
+
+    private bool RightPressFresh => (DateTime.Now - _rightPress.At).TotalMilliseconds < 800;
 
     // ── 图标鼠标交互（统一 shell OLE 拖拽） ────────────────────
 
@@ -863,9 +902,18 @@ public partial class MainWindow : Window
     private void OnIconRightClick(IconVisual iv, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        // 按下时压着别的图标（按住轻微移动跨图标）→ 以按下时的为准
+        if (RightPressFresh && _rightPress.Icon != null) iv = _rightPress.Icon;
+        ShowIconMenu(iv);
+    }
+
+    private void ShowIconMenu(IconVisual iv)
+    {
         FocusDesktop();
         if (!_selection.Contains(iv)) SelectOnly(iv);
-        var pt = iv.Root.PointToScreen(e.GetPosition(iv.Root)); // 物理 px
+        // 菜单钉在按下点（微移不挪菜单）；物理 px
+        var canvasPt = RightPressFresh ? _rightPress.Pos : IconCenter(iv);
+        var pt = IconCanvas.PointToScreen(canvasPt);
 
         // 多选且同属一个父目录 → 合并菜单；否则只对点中的那个
         var sel = _selection.Select(s => s.Entry.Path).ToList();
@@ -981,9 +1029,16 @@ public partial class MainWindow : Window
     {
         e.Handled = true;
         EndBand(); // 残留框选态会劫持右键路由，先兜底清理
+        // 按下时其实压着图标（按住轻微移动滑出到空白）→ 仍出那个图标的菜单
+        if (RightPressFresh && _rightPress.Icon != null)
+        {
+            ShowIconMenu(_rightPress.Icon);
+            return;
+        }
         FocusDesktop();
         ClearSelection();
-        var pt = RootGrid.PointToScreen(e.GetPosition(RootGrid));
+        var canvasPt = RightPressFresh ? _rightPress.Pos : e.GetPosition(IconCanvas);
+        var pt = IconCanvas.PointToScreen(canvasPt);
         MenuHost.RequestBackgroundMenu((int)pt.X, (int)pt.Y, DesktopItemProvider.UserDesktop);
     }
 
@@ -1235,11 +1290,13 @@ public partial class MainWindow : Window
         {
             Text = editText,
             FontSize = 12,
+            FontFamily = LabelFontFamily,
             MinWidth = 60,
             MaxWidth = CellW + 40,
             TextAlignment = TextAlignment.Center,
             Padding = new Thickness(2, 0, 2, 1),
         };
+        TextOptions.SetTextFormattingMode(_renameBox, TextFormattingMode.Display);
         InputMethod.SetIsInputMethodEnabled(_renameBox, true); // 重命名框放开 IME，允许输入中文名
         iv.LabelPlate.Child = _renameBox;
         _renameBox.KeyDown += (_, ke) =>
