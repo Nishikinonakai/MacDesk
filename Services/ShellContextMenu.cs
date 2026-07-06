@@ -146,9 +146,12 @@ internal static class ShellContextMenu
             desktop.BindToObject(pidl, IntPtr.Zero, ref iidFolder, out object folderObj);
             var folder = (IShellFolder)folderObj;
             var iidMenu = IID_IContextMenu;
-            folder.CreateViewObject(ownerHwnd, ref iidMenu, out object menuObj);
             hMenu = CreatePopupMenu();
-            ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            using (new ManagedHandlerShield())
+            {
+                folder.CreateViewObject(ownerHwnd, ref iidMenu, out object menuObj);
+                ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            }
             Log.Write("prewarm: bg menu ok");
             // 文件项扩展不在这里预热：这台机上文件项 QueryContextMenu 会 fail-fast（0xc0000409），
             // 崩了会带走 host。文件项统一走牺牲进程探针（--menuprobe，见 ProbeFile/MenuHost.ProbeSafe）。
@@ -174,9 +177,13 @@ internal static class ShellContextMenu
             var iidFolder = IID_IShellFolder;
             if (SHBindToParent(pidl, ref iidFolder, out object pf, out IntPtr child) != 0) return false;
             var iidMenu = IID_IContextMenu;
-            ((IShellFolder)pf).GetUIObjectOf(ownerHwnd, 1, new[] { child }, ref iidMenu, IntPtr.Zero, out object fm);
             hMenu = CreatePopupMenu();
-            int hr = ((IContextMenu)fm).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            int hr;
+            using (new ManagedHandlerShield())
+            {
+                ((IShellFolder)pf).GetUIObjectOf(ownerHwnd, 1, new[] { child }, ref iidMenu, IntPtr.Zero, out object fm);
+                hr = ((IContextMenu)fm).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            }
             Log.Write($"menu probe ok: {path} hr=0x{hr:X8}");
             return hr >= 0;
         }
@@ -214,9 +221,7 @@ internal static class ShellContextMenu
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_D_PROPS, "属性");
 
-            ForceForeground(ownerHwnd);
-            DrainCancelMode(ownerHwnd);
-            int cmd = TrackPopupMenuEx(hMenu, TPM_FLAGS, screenX, screenY, ownerHwnd, IntPtr.Zero);
+            int cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY);
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"degraded file menu shown for {paths.Length} item(s), cmd=0x{cmd:X}");
             switch ((uint)cmd)
@@ -262,18 +267,20 @@ internal static class ShellContextMenu
             var folder = (IShellFolder)folderObj!;
 
             var iidMenu = IID_IContextMenu;
-            folder.GetUIObjectOf(ownerHwnd, (uint)paths.Length, children, ref iidMenu, IntPtr.Zero, out object menuObj);
-            var menu = (IContextMenu)menuObj;
-
+            object menuObj;
+            int hr;
             hMenu = CreatePopupMenu();
-            int hr = menu.QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            using (new ManagedHandlerShield())
+            {
+                folder.GetUIObjectOf(ownerHwnd, (uint)paths.Length, children, ref iidMenu, IntPtr.Zero, out menuObj);
+                hr = ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            }
+            var menu = (IContextMenu)menuObj;
             if (hr < 0) { Log.Write($"file menu: QueryContextMenu hr=0x{hr:X8}"); return; }
 
-            ForceForeground(ownerHwnd);
-            DrainCancelMode(ownerHwnd);
             _activeMenu = menuObj;
             int cmd;
-            try { cmd = TrackPopupMenuEx(hMenu, TPM_FLAGS, screenX, screenY, ownerHwnd, IntPtr.Zero); }
+            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"file menu shown for {paths.Length} item(s), cmd={cmd}");
@@ -287,10 +294,113 @@ internal static class ShellContextMenu
         }
     }
 
+    // ── 托管 shell 扩展隔离 ───────────────────────────────────
+    // 真凶复盘（2026-07-06 二分定位）：Locale Emulator 的 LEContextMenuHandler 是
+    // .NET Framework 写的 shell 扩展（InprocServer32 = mscoree.dll）。本进程是 .NET 10，
+    // 加载 Framework CLR 的 COM 组件直接 fail-fast 0xC0000409——任何托管 shell 扩展在
+    // 我们进程里都必炸（Explorer 不炸是因为它没载新 CLR）。对策：QueryContextMenu 的
+    // 毫秒级窗口内把这些 CLSID 临时写入系统 Blocked 键（shell 聚合时跳过它们），
+    // 完事立刻移除——Explorer 平时的菜单不受影响。
+
+    private static readonly string[] HandlerRoots =
+    {
+        @"*\shellex\ContextMenuHandlers",
+        @"AllFilesystemObjects\shellex\ContextMenuHandlers",
+        @"Folder\shellex\ContextMenuHandlers",
+        @"Directory\shellex\ContextMenuHandlers",
+        @"Directory\Background\shellex\ContextMenuHandlers",
+        @"DesktopBackground\shellex\ContextMenuHandlers",
+        @"lnkfile\shellex\ContextMenuHandlers",
+        @"exefile\shellex\ContextMenuHandlers",
+    };
+
+    private static readonly Lazy<string[]> ManagedHandlerClsids = new(() =>
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var root in HandlerRoots)
+            {
+                using var key = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey(root);
+                if (key == null) continue;
+                foreach (var sub in key.GetSubKeyNames())
+                {
+                    using var hk = key.OpenSubKey(sub);
+                    // CLSID 的两种注册姿势：默认值 = CLSID；或键名 = CLSID、默认值 = 显示名（LE 是后者）
+                    var val = hk?.GetValue(null) as string;
+                    string? clsid = val is not null && val.StartsWith('{') ? val
+                        : sub.StartsWith('{') ? sub : null;
+                    if (clsid == null) continue;
+                    using var inproc = Microsoft.Win32.Registry.ClassesRoot.OpenSubKey($@"CLSID\{clsid}\InprocServer32");
+                    if (inproc?.GetValue(null) is string dll &&
+                        dll.Contains("mscoree", StringComparison.OrdinalIgnoreCase) &&
+                        !list.Contains(clsid, StringComparer.OrdinalIgnoreCase))
+                        list.Add(clsid);
+                }
+            }
+        }
+        catch (Exception ex) { Log.Write("managed handler scan failed: " + ex.Message); }
+        if (list.Count > 0)
+            Log.Write($"managed (mscoree) shell handlers to bypass: {string.Join(", ", list)}");
+        return list.ToArray();
+    });
+
+    private const string BlockedKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked";
+
+    /// <summary>菜单构建期间临时屏蔽托管扩展（Dispose 即恢复）。</summary>
+    private sealed class ManagedHandlerShield : IDisposable
+    {
+        private readonly string[] _blocked;
+
+        public ManagedHandlerShield()
+        {
+            _blocked = ManagedHandlerClsids.Value;
+            if (_blocked.Length == 0) return;
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(BlockedKeyPath);
+                foreach (var c in _blocked) key.SetValue(c, "");
+            }
+            catch (Exception ex) { Log.Write("handler shield up failed: " + ex.Message); }
+        }
+
+        public void Dispose()
+        {
+            if (_blocked.Length == 0) return;
+            try
+            {
+                using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(BlockedKeyPath, writable: true);
+                if (key == null) return;
+                foreach (var c in _blocked) key.DeleteValue(c, throwOnMissingValue: false);
+            }
+            catch (Exception ex) { Log.Write("handler shield down failed: " + ex.Message); }
+        }
+    }
+
     /// <summary>排空滞留在队列里的 WM_CANCELMODE（迟到的 Dismiss 信号会把新菜单秒杀）。</summary>
     private static void DrainCancelMode(IntPtr ownerHwnd)
     {
         while (PeekMessageW(out _, ownerHwnd, WM_CANCELMODE, WM_CANCELMODE, PM_REMOVE)) { }
+    }
+
+    /// <summary>
+    /// TrackPopupMenu + 瞬灭重试。点击桌面会让 Progman 父链**异步**激活，激活落地时会把
+    /// 别的线程刚开出的菜单扫掉（真机实测：菜单 ~85ms 自灭 cmd=0，时序抖动决定谁存活，
+    /// 表现为"右键时灵时不灵"）。开出 <300ms 即灭且期间没有任何按键/鼠标按下 = 误杀 → 重开。
+    /// </summary>
+    private static int TrackWithRetry(IntPtr hMenu, IntPtr ownerHwnd, int x, int y)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            ForceForeground(ownerHwnd);
+            DrainCancelMode(ownerHwnd);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            int cmd = TrackPopupMenuEx(hMenu, TPM_FLAGS, x, y, ownerHwnd, IntPtr.Zero);
+            if (cmd != 0 || sw.ElapsedMilliseconds > 300 || attempt >= 2) return cmd;
+            if ((GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0 ||
+                (GetAsyncKeyState(0x1B) & 0x8000) != 0) return cmd; // 用户真在点/按 Esc = 真取消
+            Log.Write($"menu insta-cancelled in {sw.ElapsedMilliseconds}ms (fg={GetForegroundWindow()}), retrying");
+        }
     }
 
     /// <summary>
@@ -335,11 +445,15 @@ internal static class ShellContextMenu
             var folder = (IShellFolder)folderObj;
 
             var iidMenu = IID_IContextMenu;
-            folder.CreateViewObject(ownerHwnd, ref iidMenu, out object menuObj);
-            var menu = (IContextMenu)menuObj;
-
+            object menuObj;
+            int hr;
             hMenu = CreatePopupMenu();
-            int hr = menu.QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            using (new ManagedHandlerShield())
+            {
+                folder.CreateViewObject(ownerHwnd, ref iidMenu, out menuObj);
+                hr = ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+            }
+            var menu = (IContextMenu)menuObj;
             if (hr < 0) { Log.Write($"bg menu: QueryContextMenu hr=0x{hr:X8}"); return; }
 
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
@@ -361,11 +475,9 @@ internal static class ShellContextMenu
                 (UIntPtr)ID_AUTOSTART, "开机自启");
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_QUIT, "退出 MacDesk (Ctrl+Alt+Q)");
 
-            ForceForeground(ownerHwnd);
-            DrainCancelMode(ownerHwnd);
             _activeMenu = menuObj;
             int cmd;
-            try { cmd = TrackPopupMenuEx(hMenu, TPM_FLAGS, screenX, screenY, ownerHwnd, IntPtr.Zero); }
+            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"bg menu shown, cmd=0x{cmd:X}");

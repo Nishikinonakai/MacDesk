@@ -122,6 +122,9 @@ internal static class Native
     public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
 
     [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
     public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     public const uint WM_NULL = 0x0000;

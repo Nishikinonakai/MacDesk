@@ -686,6 +686,15 @@ public partial class MainWindow : Window
 
     private readonly HashSet<IconVisual> _dragGhosts = new(); // 拖拽中留影的图标（自愈时豁免）
 
+    /// <summary>
+    /// 进程内拖拽会话：OLE 数据对象带不了抓取偏移，Drop 端从这里拿。
+    /// 有它才能做到"从哪里抓起、就落回视觉所在的位置"（否则每次放下都平移一个抓取偏移，
+    /// 机主实测像在对齐一个看不见的网格）。静态 = 跨窗口（跨屏拖拽）可见。
+    /// </summary>
+    internal sealed record DragContext(string AnchorPath, Point GrabOffset, Dictionary<string, Point> RelOffsets);
+
+    internal static DragContext? ActiveDrag;
+
     private void OnIconMouseDown(IconVisual iv, MouseButtonEventArgs e)
     {
         e.Handled = true;
@@ -741,12 +750,22 @@ public partial class MainWindow : Window
         iv.MouseDown = false;
         iv.Root.ReleaseMouseCapture();
 
-        var (image, hotspot) = RenderDragImage(group, p);
+        // 抓取基准一律用按下点（不是过阈值那一刻的光标）：拖拽图像出现时正好覆盖原图标，
+        // 落位 = 图像视觉位置，拿起-放回零漂移
+        var (image, hotspot) = RenderDragImage(group, iv.DownPos);
+        double ax = double.IsNaN(Canvas.GetLeft(iv.Root)) ? 0 : Canvas.GetLeft(iv.Root);
+        double ay = double.IsNaN(Canvas.GetTop(iv.Root)) ? 0 : Canvas.GetTop(iv.Root);
+        ActiveDrag = new DragContext(iv.Entry.Path, new Point(iv.DownPos.X - ax, iv.DownPos.Y - ay),
+            group.ToDictionary(g => g.Entry.Path, g => new Point(
+                (double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root)) - ax,
+                (double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root)) - ay),
+                StringComparer.OrdinalIgnoreCase));
         foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); } // 原位留影
         try { ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
         finally
         {
+            ActiveDrag = null;
             foreach (var g in group) g.Root.Opacity = 1;
             _dragGhosts.Clear();
             iv.Dragging = false;
@@ -1453,24 +1472,34 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 把一组桌面项重定位到落点。本窗口的图标直接动画落座；不在本窗口的（跨屏拖拽）
+    /// 把一组桌面项重定位到落点。本窗口的图标直接落座；不在本窗口的（跨屏拖拽）
     /// 写归属到本屏后全局刷新，由分发逻辑移交图标。
+    /// 自家拖拽（ActiveDrag 有值）：锚点落在"拖拽图像视觉所在位置"（落点减抓取偏移），
+    /// 组成员保持拖起时的相对位置（Finder 语义）；且不播放飞行动画——图像已经把图标带到位了。
     /// </summary>
     private void RepositionAt(string[] paths, Point dropPos)
     {
+        var ctx = ActiveDrag;
+        Point anchorTL = ctx != null
+            ? new Point(dropPos.X - ctx.GrabOffset.X, dropPos.Y - ctx.GrabOffset.Y)
+            : new Point(dropPos.X - CellW / 2, dropPos.Y - CellH / 2); // 无会话（外部拖入自家文件）退回居中
+
         var occupied = _icons.Values
             .Where(o => o.Canon != null && !paths.Contains(o.Entry.Path, StringComparer.OrdinalIgnoreCase))
             .Select(o => ClampCell(CanonToCell(o.Canon!)))
             .ToHashSet();
         bool ownershipChanged = false;
-        double offset = 0;
+        double cascade = 0;
         foreach (var p in paths)
         {
             var iv = _icons.Values.FirstOrDefault(i =>
                 string.Equals(i.Entry.Path, p, StringComparison.OrdinalIgnoreCase));
             string name = Path.GetFileName(p);
             if (string.IsNullOrEmpty(name)) name = p; // 虚拟项兜底
-            double dl = dropPos.X - CellW / 2 + offset, dt = dropPos.Y - CellH / 2 + offset;
+            Point rel = ctx != null && ctx.RelOffsets.TryGetValue(p, out var r)
+                ? r : new Point(cascade, cascade);
+            if (ctx == null) cascade += 8;
+            double dl = anchorTL.X + rel.X, dt = anchorTL.Y + rel.Y;
             CanonPos canon;
             double fl, ft;
             if (Config.FreePlacement)
@@ -1491,13 +1520,12 @@ public partial class MainWindow : Window
             if (iv != null)
             {
                 iv.Canon = canon;
-                MoveIcon(iv, fl, ft, animated: true);
+                MoveIcon(iv, fl, ft, animated: false);
             }
             else
             {
                 ownershipChanged = true; // 图标属于别的窗口：跨屏拖拽换归属
             }
-            offset += 8;
         }
         LayoutFile.Save();
         if (ownershipChanged)
