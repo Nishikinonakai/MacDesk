@@ -1,0 +1,11 @@
+<Window x:Class="MacDesk.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="MacDeskDesktop"
+        WindowStyle="None" ResizeMode="NoResize"
+        ShowInTaskbar="False" ShowActivated="False"
+        AllowDrop="True" Focusable="True">
+    <Grid x:Name="RootGrid" Background="#01000000">
+        <Canvas x:Name="IconCanvas"/>
+    </Grid>
+</Window>

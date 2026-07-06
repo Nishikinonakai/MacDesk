@@ -1,0 +1,19 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Runtime artifacts
+*.log
+macdesk.log
+
+# Local layout/settings (runtime, per-machine)
+layout.json
+settings.json
+
+# IDE / OS
+.vs/
+.idea/
+*.user
+.DS_Store
+Thumbs.db
