@@ -45,22 +45,25 @@ internal static class MenuHost
         }
     }
 
-    public static void RequestFileMenu(int x, int y, string[] paths) => Request("files", x, y, paths);
-    public static void RequestBackgroundMenu(int x, int y, string folder) => Request("bg", x, y, new[] { folder });
+    public static void RequestFileMenu(int x, int y, string[] paths, IntPtr desktopHwnd) =>
+        Request("files", x, y, desktopHwnd, paths);
+
+    public static void RequestBackgroundMenu(int x, int y, string folder, IntPtr desktopHwnd) =>
+        Request("bg", x, y, desktopHwnd, new[] { folder });
 
     /// <summary>收起当前打开的菜单（点击别处/开新菜单前调用）。</summary>
     public static void Dismiss() => CommandChannel.Signal("DismissMenu");
 
     /// <summary>请求走后台线程：host 死了要重拉时（最长几秒）别卡 UI 线程。</summary>
-    private static void Request(string verb, int x, int y, string[] paths) =>
-        Task.Run(() => RequestCore(verb, x, y, paths));
+    private static void Request(string verb, int x, int y, IntPtr desktopHwnd, string[] paths) =>
+        Task.Run(() => RequestCore(verb, x, y, desktopHwnd, paths));
 
-    private static void RequestCore(string verb, int x, int y, string[] paths)
+    private static void RequestCore(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
     {
         // 注意：这里不能先 Dismiss()——信号线程可能晚于管道请求被调度，把自己刚开的菜单
         // 秒杀（真机竞态实测）。旧菜单开着时新右键会被 OS 当"点击外部"自动关掉（菜单有
         // 前台权限），host 串行循环随后自然接到本请求。
-        var payload = $"{verb}{US}{x}{US}{y}{US}{string.Join(US, paths)}";
+        var payload = $"{verb}{US}{x}{US}{y}{US}{(long)desktopHwnd}{US}{string.Join(US, paths)}";
         if (TrySend(payload, 1500)) return;
 
         // 连不上 ≠ host 死了——它可能只是忙（探针进程/上一个菜单占着串行循环）。
@@ -161,20 +164,21 @@ internal static class MenuHost
                 string payload;
                 using (var r = new StreamReader(server, Encoding.UTF8)) payload = r.ReadToEnd();
                 var parts = payload.Split(US);
-                if (parts.Length < 4) continue;
+                if (parts.Length < 5) continue;
                 int x = int.Parse(parts[1]), y = int.Parse(parts[2]);
-                var paths = parts.Skip(3).ToArray();
+                var desktopHwnd = new IntPtr(long.Parse(parts[3]));
+                var paths = parts.Skip(4).ToArray();
                 Log.Write($"menu host: {parts[0]} request at {x},{y} ({paths.Length} path(s))");
                 bool full = parts[0] != "bg" && ProbeSafe(paths[0]);
                 _menuOpen = true;
                 try
                 {
                     if (parts[0] == "bg")
-                        ShellContextMenu.ShowBackground(paths[0], _ownerHwnd, x, y);
+                        ShellContextMenu.ShowBackground(paths[0], _ownerHwnd, x, y, desktopHwnd);
                     else if (full)
-                        ShellContextMenu.Show(paths, _ownerHwnd, x, y);
+                        ShellContextMenu.Show(paths, _ownerHwnd, x, y, desktopHwnd);
                     else
-                        ShellContextMenu.ShowDegraded(paths, _ownerHwnd, x, y);
+                        ShellContextMenu.ShowDegraded(paths, _ownerHwnd, x, y, desktopHwnd);
                 }
                 finally { _menuOpen = false; }
             }

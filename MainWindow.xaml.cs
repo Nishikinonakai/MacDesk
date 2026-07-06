@@ -943,7 +943,7 @@ public partial class MainWindow : Window
         else
             paths = new[] { iv.Entry.Path };
 
-        MenuHost.RequestFileMenu((int)pt.X, (int)pt.Y, paths);
+        MenuHost.RequestFileMenu((int)pt.X, (int)pt.Y, paths, _hwnd);
     }
 
     private static void OpenEntry(DesktopEntry en)
@@ -1058,7 +1058,7 @@ public partial class MainWindow : Window
         PrepareForMenu();
         ClearSelection();
         var pt = IconCanvas.PointToScreen(MenuAnchor(up));
-        MenuHost.RequestBackgroundMenu((int)pt.X, (int)pt.Y, DesktopItemProvider.UserDesktop);
+        MenuHost.RequestBackgroundMenu((int)pt.X, (int)pt.Y, DesktopItemProvider.UserDesktop, _hwnd);
     }
 
     // ── 键盘：回车/F2 重命名、Delete 回收站、Esc ──────────────

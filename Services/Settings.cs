@@ -11,6 +11,10 @@ internal sealed class Settings
     /// <summary>自由摆放：拖放落点即位置、重排不吸附网格（macOS arrangeBy=none）。默认关（Windows 习惯网格）。</summary>
     public bool FreePlacement { get; set; }
 
+    /// <summary>右键菜单黑名单：菜单项文本含任一子串（不分大小写）即被移除。
+    /// 手工编辑 settings.json 配置；设置 GUI 做出来之前的过渡形态（机主点名讨厌 AMD 项）。</summary>
+    public List<string> MenuBlacklist { get; set; } = new() { "AMD Software" };
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -25,6 +29,11 @@ internal sealed class Settings
             {
                 using var doc = JsonDocument.Parse(File.ReadAllText(file));
                 if (doc.RootElement.TryGetProperty("FreePlacement", out var fp)) s.FreePlacement = fp.GetBoolean();
+                if (doc.RootElement.TryGetProperty("MenuBlacklist", out var bl) && bl.ValueKind == JsonValueKind.Array)
+                    s.MenuBlacklist = bl.EnumerateArray()
+                        .Where(e => e.ValueKind == JsonValueKind.String)
+                        .Select(e => e.GetString()!)
+                        .ToList();
             }
         }
         catch { }
@@ -36,7 +45,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement }, new JsonSerializerOptions { WriteIndented = true }));
+                new { FreePlacement, MenuBlacklist }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

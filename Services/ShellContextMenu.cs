@@ -114,6 +114,50 @@ internal static class ShellContextMenu
     [DllImport("user32.dll")]
     private static extern int TrackPopupMenuEx(IntPtr hmenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
 
+    [DllImport("user32.dll")]
+    private static extern int GetMenuItemCount(IntPtr hMenu);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetMenuStringW(IntPtr hMenu, uint uIDItem, System.Text.StringBuilder lpString, int cchMax, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool RemoveMenu(IntPtr hMenu, uint uPosition, uint uFlags);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetMenuState(IntPtr hMenu, uint uId, uint uFlags);
+
+    private const uint MF_BYPOSITION = 0x0400;
+
+    /// <summary>按用户黑名单（settings.json 的 MenuBlacklist，子串不分大小写）剥掉菜单项，
+    /// 并清理由此产生的重复/边缘分隔线。设置 GUI 之前的过渡配置形态。</summary>
+    private static void StripBlacklisted(IntPtr hMenu)
+    {
+        List<string> bl;
+        try { bl = Settings.Load().MenuBlacklist; } catch { return; }
+        if (bl is not { Count: > 0 }) return;
+
+        for (int i = GetMenuItemCount(hMenu) - 1; i >= 0; i--)
+        {
+            var sb = new System.Text.StringBuilder(512);
+            GetMenuStringW(hMenu, (uint)i, sb, sb.Capacity, MF_BYPOSITION);
+            var txt = sb.ToString();
+            if (txt.Length > 0 && bl.Any(b => !string.IsNullOrWhiteSpace(b) && txt.Contains(b, StringComparison.OrdinalIgnoreCase)))
+                RemoveMenu(hMenu, (uint)i, MF_BYPOSITION);
+        }
+
+        bool prevSep = true; // 也顺带删掉开头的分隔线
+        for (int i = 0; i < GetMenuItemCount(hMenu); )
+        {
+            bool sep = (GetMenuState(hMenu, (uint)i, MF_BYPOSITION) & MF_SEPARATOR) != 0;
+            if (sep && prevSep) { RemoveMenu(hMenu, (uint)i, MF_BYPOSITION); continue; }
+            prevSep = sep;
+            i++;
+        }
+        int n = GetMenuItemCount(hMenu);
+        if (n > 0 && (GetMenuState(hMenu, (uint)(n - 1), MF_BYPOSITION) & MF_SEPARATOR) != 0)
+            RemoveMenu(hMenu, (uint)(n - 1), MF_BYPOSITION);
+    }
+
     [DllImport("ole32.dll")]
     private static extern void CoTaskMemFree(IntPtr pv);
 
@@ -204,7 +248,7 @@ internal static class ShellContextMenu
     private const uint ID_D_OPEN = 0x7101, ID_D_OPENWITH = 0x7102, ID_D_CUT = 0x7103, ID_D_COPY = 0x7104,
                        ID_D_RENAME = 0x7105, ID_D_DELETE = 0x7106, ID_D_PROPS = 0x7107;
 
-    public static void ShowDegraded(string[] paths, IntPtr ownerHwnd, int screenX, int screenY)
+    public static void ShowDegraded(string[] paths, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
     {
         IntPtr hMenu = CreatePopupMenu();
         try
@@ -221,7 +265,7 @@ internal static class ShellContextMenu
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_D_PROPS, "属性");
 
-            int cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY);
+            int cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd);
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"degraded file menu shown for {paths.Length} item(s), cmd=0x{cmd:X}");
             switch ((uint)cmd)
@@ -246,7 +290,7 @@ internal static class ShellContextMenu
     }
 
     /// <summary>文件项菜单。多个路径必须同属一个父文件夹（调用方保证）。</summary>
-    public static void Show(string[] paths, IntPtr ownerHwnd, int screenX, int screenY)
+    public static void Show(string[] paths, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
     {
         if (paths.Length == 0) return;
         var pidls = new IntPtr[paths.Length];
@@ -277,10 +321,11 @@ internal static class ShellContextMenu
             }
             var menu = (IContextMenu)menuObj;
             if (hr < 0) { Log.Write($"file menu: QueryContextMenu hr=0x{hr:X8}"); return; }
+            StripBlacklisted(hMenu);
 
             _activeMenu = menuObj;
             int cmd;
-            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY); }
+            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"file menu shown for {paths.Length} item(s), cmd={cmd}");
@@ -388,12 +433,27 @@ internal static class ShellContextMenu
     /// 别的线程刚开出的菜单扫掉（真机实测：菜单 ~85ms 自灭 cmd=0，时序抖动决定谁存活，
     /// 表现为"右键时灵时不灵"）。开出 <300ms 即灭且期间没有任何按键/鼠标按下 = 误杀 → 重开。
     /// </summary>
-    private static int TrackWithRetry(IntPtr hMenu, IntPtr ownerHwnd, int x, int y)
+    private static int TrackWithRetry(IntPtr hMenu, IntPtr ownerHwnd, int x, int y, IntPtr desktopHwnd)
     {
         // 等鼠标键全部松开再开菜单：菜单在按住的按键正下方"物化"，紧接着的抬起会被判成
         // 选中菜单项（机主实测：右键图标偶发直接触发 File Locksmith）
         for (int i = 0; i < 40 && ((GetAsyncKeyState(0x01) | GetAsyncKeyState(0x02)) & 0x8000) != 0; i++)
             Thread.Sleep(10);
+
+        // 等前台风暴平息再开菜单：上一个菜单被点击关闭时，系统会把前台异步归还给
+        // 我们的主窗口、再到 Progman（真机日志：两发迟到夺台，各杀一个菜单，连击时每次
+        // 都要三开才站住）。轮询前台直到 75ms 无变化（最多等 300ms），一次开成、无闪烁。
+        // 注：AttachThreadInput 共享输入队列挡不住这种失活（实测），别再试了。
+        int t0 = Environment.TickCount;
+        IntPtr lastFg = GetForegroundWindow();
+        int stableSince = t0;
+        while (Environment.TickCount - t0 < 300)
+        {
+            Thread.Sleep(15);
+            var f = GetForegroundWindow();
+            if (f != lastFg) { lastFg = f; stableSince = Environment.TickCount; }
+            else if (Environment.TickCount - stableSince >= 75) break;
+        }
 
         for (int attempt = 0; ; attempt++)
         {
@@ -401,7 +461,7 @@ internal static class ShellContextMenu
             DrainCancelMode(ownerHwnd);
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int cmd = TrackPopupMenuEx(hMenu, TPM_FLAGS, x, y, ownerHwnd, IntPtr.Zero);
-            if (cmd != 0 || sw.ElapsedMilliseconds > 300 || attempt >= 2) return cmd;
+            if (cmd != 0 || sw.ElapsedMilliseconds > 300 || attempt >= 3) return cmd;
             if ((GetAsyncKeyState(0x01) & 0x8000) != 0 || (GetAsyncKeyState(0x02) & 0x8000) != 0 ||
                 (GetAsyncKeyState(0x1B) & 0x8000) != 0) return cmd; // 用户真在点/按 Esc = 真取消
             var fg = GetForegroundWindow();
@@ -437,7 +497,7 @@ internal static class ShellContextMenu
     }
 
     /// <summary>桌面背景菜单（新建/粘贴/查看等）+ MacDesk 自定义项。</summary>
-    public static void ShowBackground(string folderPath, IntPtr ownerHwnd, int screenX, int screenY)
+    public static void ShowBackground(string folderPath, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
     {
         IntPtr pidl = IntPtr.Zero, hMenu = IntPtr.Zero;
         try
@@ -462,6 +522,7 @@ internal static class ShellContextMenu
             }
             var menu = (IContextMenu)menuObj;
             if (hr < 0) { Log.Write($"bg menu: QueryContextMenu hr=0x{hr:X8}"); return; }
+            StripBlacklisted(hMenu);
 
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_ARRANGE, "按 mac 式网格整理");
@@ -484,7 +545,7 @@ internal static class ShellContextMenu
 
             _activeMenu = menuObj;
             int cmd;
-            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY); }
+            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"bg menu shown, cmd=0x{cmd:X}");
