@@ -130,13 +130,21 @@ internal sealed class LayoutStore
         catch { }
     }
 
+    /// <summary>
+    /// 撤销 = **交换**当前布局与撤销点（再点一次 = 恢复/redo）。
+    /// 事故教训（2026-07-06）：旧实现直接用 .undo 覆盖当前布局且不备份——.undo 若是陈年
+    /// 快照，一点撤销就把用户的现役布局毁掉且不可逆。交换语义永不丢数据。
+    /// </summary>
     public bool TryUndo()
     {
         try
         {
             var undo = _file + ".undo";
             if (!File.Exists(undo)) return false;
+            Save(); // 当前内存状态先落盘
+            string current = File.ReadAllText(_file);
             File.Copy(undo, _file, overwrite: true);
+            File.WriteAllText(undo, current);
             _monitors = new();
             Load();
             return true;

@@ -97,6 +97,10 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent;
         }
         InitializeComponent();
+        // 布局取整到像素边界：StackPanel 居中会把标签排到 .5 偏移上，
+        // 奇偶宽度不同的标签一半清晰一半糊（机主红圈截图实锤）
+        UseLayoutRounding = true;
+        SnapsToDevicePixels = true;
         if (!App.Transparent)
         {
             Background = Brushes.Black;
@@ -402,9 +406,9 @@ public partial class MainWindow : Window
             Text = en.DisplayName,
             Foreground = Brushes.White,
             FontSize = 12,
-            // mac 质感：中文落到雅黑 Bold、拉丁走 Segoe UI Semibold（Windows 自带，免费合法）
+            // mac 质感：中英文都上 Bold（机主反馈 SemiBold 英文仍偏细；Windows 自带，免费合法）
             FontFamily = LabelFontFamily,
-            FontWeight = FontWeights.SemiBold,
+            FontWeight = FontWeights.Bold,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -703,6 +707,15 @@ public partial class MainWindow : Window
         Keyboard.Focus(this);
     }
 
+    /// <summary>
+    /// 右键菜单前的前台准备：只请桌面链到前台，**不做 SetFocus/Keyboard.Focus**——
+    /// 真机日志实锤：WPF 拿焦点会让我们自己的窗口在 ~85ms 后异步夺前台，把菜单
+    /// host 刚开的菜单扫掉（cls=HwndWrapper[MacDesk] 的 insta-cancel 元凶就是自己人）。
+    /// 菜单不需要我们这边的键盘焦点。
+    /// </summary>
+    private void PrepareForMenu() =>
+        Native.SetForegroundWindow(Native.GetAncestor(_hwnd, Native.GA_ROOT));
+
     // 右键按下点快照：按住时的轻微移动不应改变菜单目标/位置（按下压着谁就对谁弹菜单，
     // 菜单钉在按下点；否则微移后在空白处抬起会误出背景菜单）
     private (Point Pos, IconVisual? Icon, DateTime At) _rightPress;
@@ -899,21 +912,27 @@ public partial class MainWindow : Window
         return want; // 全满：接受重叠
     }
 
+    /// <summary>按下点近旁抬起（≤16 DIU）→ 菜单钉在按下点；拖远了（右键拖拽）→ 用抬起点。</summary>
+    private Point MenuAnchor(Point upPos) =>
+        RightPressFresh && (upPos - _rightPress.Pos).Length <= 16 ? _rightPress.Pos : upPos;
+
+    private bool PressNear(Point upPos) =>
+        RightPressFresh && (upPos - _rightPress.Pos).Length <= 16;
+
     private void OnIconRightClick(IconVisual iv, MouseButtonEventArgs e)
     {
         e.Handled = true;
+        var up = e.GetPosition(IconCanvas);
         // 按下时压着别的图标（按住轻微移动跨图标）→ 以按下时的为准
-        if (RightPressFresh && _rightPress.Icon != null) iv = _rightPress.Icon;
-        ShowIconMenu(iv);
+        if (PressNear(up) && _rightPress.Icon != null) iv = _rightPress.Icon;
+        ShowIconMenu(iv, MenuAnchor(up));
     }
 
-    private void ShowIconMenu(IconVisual iv)
+    private void ShowIconMenu(IconVisual iv, Point canvasAnchor)
     {
-        FocusDesktop();
+        PrepareForMenu();
         if (!_selection.Contains(iv)) SelectOnly(iv);
-        // 菜单钉在按下点（微移不挪菜单）；物理 px
-        var canvasPt = RightPressFresh ? _rightPress.Pos : IconCenter(iv);
-        var pt = IconCanvas.PointToScreen(canvasPt);
+        var pt = IconCanvas.PointToScreen(canvasAnchor); // 物理 px
 
         // 多选且同属一个父目录 → 合并菜单；否则只对点中的那个
         var sel = _selection.Select(s => s.Entry.Path).ToList();
@@ -1029,16 +1048,16 @@ public partial class MainWindow : Window
     {
         e.Handled = true;
         EndBand(); // 残留框选态会劫持右键路由，先兜底清理
+        var up = e.GetPosition(IconCanvas);
         // 按下时其实压着图标（按住轻微移动滑出到空白）→ 仍出那个图标的菜单
-        if (RightPressFresh && _rightPress.Icon != null)
+        if (PressNear(up) && _rightPress.Icon != null)
         {
-            ShowIconMenu(_rightPress.Icon);
+            ShowIconMenu(_rightPress.Icon, MenuAnchor(up));
             return;
         }
-        FocusDesktop();
+        PrepareForMenu();
         ClearSelection();
-        var canvasPt = RightPressFresh ? _rightPress.Pos : e.GetPosition(IconCanvas);
-        var pt = IconCanvas.PointToScreen(canvasPt);
+        var pt = IconCanvas.PointToScreen(MenuAnchor(up));
         MenuHost.RequestBackgroundMenu((int)pt.X, (int)pt.Y, DesktopItemProvider.UserDesktop);
     }
 

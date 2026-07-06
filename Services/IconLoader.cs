@@ -88,6 +88,25 @@ internal static class IconLoader
             Native.ReleaseDC(IntPtr.Zero, hdc);
         }
 
+        // 部分图标源给的是直通 alpha（straight），当预乘（Pbgra32）用会在半透明边缘泛白圈
+        // （机主实锤 Clash Verge 白边）。预乘图里任一色道不可能大于 alpha——据此检测并转换。
+        bool straight = false;
+        for (int i = 0; i < bits.Length; i += 4)
+        {
+            byte a = bits[i + 3];
+            if (bits[i] > a || bits[i + 1] > a || bits[i + 2] > a) { straight = true; break; }
+        }
+        if (straight)
+        {
+            for (int i = 0; i < bits.Length; i += 4)
+            {
+                byte a = bits[i + 3];
+                bits[i] = (byte)(bits[i] * a / 255);
+                bits[i + 1] = (byte)(bits[i + 1] * a / 255);
+                bits[i + 2] = (byte)(bits[i + 2] * a / 255);
+            }
+        }
+
         var src = BitmapSource.Create(bm.bmWidth, bm.bmHeight, 96, 96, PixelFormats.Pbgra32, null, bits, stride);
         src.Freeze();
         return src;
