@@ -338,6 +338,31 @@ public partial class MainWindow : Window
             handled = true;
             return IntPtr.Zero;
         }
+        // 主进程同线程菜单（序列化路径）：owner-draw 项回放捕获位图
+        if (msg is 0x002C /* WM_MEASUREITEM */ && MenuSnapshot.OnMeasureItem(NativeMenuPresenter.Current, lParam))
+        {
+            handled = true;
+            return (IntPtr)1;
+        }
+        if (msg is 0x002B /* WM_DRAWITEM */ && MenuSnapshot.OnDrawItem(NativeMenuPresenter.Current, lParam))
+        {
+            handled = true;
+            return (IntPtr)1;
+        }
+        // 菜单开着期间吞 WM_CANCELMODE：激活风暴的迟到落地会经它杀菜单（DefWindowProc
+        // 收到即 EndMenu）。真点击外部的关闭走菜单自身的捕获判定，不经这条路，吞掉无副作用。
+        if (msg == (int)Native.WM_CANCELMODE && NativeMenuPresenter.MenuOpen)
+        {
+            handled = true;
+            return IntPtr.Zero;
+        }
+        // 子菜单白块修复：每个弹出落地后强制重绘几拍（见 NativeMenuPresenter）
+        if (msg is 0x0117 /* WM_INITMENUPOPUP */) NativeMenuPresenter.OnInitMenuPopup(hwnd);
+        if (msg is 0x0113 /* WM_TIMER */ && NativeMenuPresenter.OnTimer(hwnd, wParam))
+        {
+            handled = true;
+            return IntPtr.Zero;
+        }
         if (msg == WM_WINDOWPOSCHANGING && _attached && _forceRectValid)
         {
             var r = _forceRect;

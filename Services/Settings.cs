@@ -15,6 +15,10 @@ internal sealed class Settings
     /// 手工编辑 settings.json 配置；设置 GUI 做出来之前的过渡形态（机主点名讨厌 AMD 项）。</summary>
     public List<string> MenuBlacklist { get; set; } = new() { "AMD Software" };
 
+    /// <summary>菜单序列化进主进程同线程弹出（前台战争终极解）。false = 回退旧 host 内
+    /// TrackPopupMenu 路径（settle-wait+重试），新路径出问题时的免重建逃生口。</summary>
+    public bool MenuInMainProcess { get; set; } = true;
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -34,6 +38,7 @@ internal sealed class Settings
                         .Where(e => e.ValueKind == JsonValueKind.String)
                         .Select(e => e.GetString()!)
                         .ToList();
+                if (doc.RootElement.TryGetProperty("MenuInMainProcess", out var mm)) s.MenuInMainProcess = mm.GetBoolean();
             }
         }
         catch { }
@@ -45,7 +50,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist }, new JsonSerializerOptions { WriteIndented = true }));
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

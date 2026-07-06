@@ -1,7 +1,9 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
+using System.Text.Json;
 using MacDesk.Interop;
 
 namespace MacDesk.Services;
@@ -9,18 +11,63 @@ namespace MacDesk.Services;
 /// <summary>
 /// 常驻右键菜单子进程（<c>MacDesk.exe --menuhost &lt;mainPid&gt;</c>）。
 ///
-/// 旧方案每次右键冷启动一个一次性子进程（几百 ms 才见菜单）。现在主进程启动时预热一个
-/// 常驻 host：命名管道收请求 → 立刻 TrackPopupMenu。第三方 shell 扩展的 DLL 在预热时
-/// 就加载好，后续右键零冷启动。隔离性不变：host 被崩溃扩展带走 → 下次请求自动重拉。
+/// v2（默认，settings.MenuInMainProcess）：host 只构建——QueryContextMenu 加载第三方
+/// 扩展（崩了不伤主进程）→ 强制填充懒加载子菜单 → MenuSnapshot 摘成数据树 → 回传主进程，
+/// 主进程 UI 线程重建原生菜单同线程 TrackPopupMenu（前台战争终极解），选中的 shell 命令
+/// id 回传 host 由同一 IContextMenu 实例 InvokeCommand。
+/// 协议（管道 MacDesk.MenuHost.v2，帧 = 4 字节小端长度 + UTF8）：
+///   请求帧：verb US x US y US hwnd US path[ US path...]（verb = files2 | bg2）
+///   应答帧：JSON {Kind: "native"|"degraded"|"error", Items:[...]}
+///   命令帧（仅 native）：4 字节小端 int（shell cmd id，0 = 取消/本地命令）
 ///
-/// 协议（每请求一次连接，US=0x1F 分隔）：verb US x US y US path[ US path...]
-///   verb = "files"（文件项菜单）| "bg"（桌面背景菜单）
-/// 菜单收起：命名事件 MacDesk.Cmd.DismissMenu → host 给 owner 发 WM_CANCELMODE。
+/// 旧路径（settings 关掉 v2 时）：host 内 TrackPopupMenu + settle-wait + 瞬灭重试，
+/// 协议同旧版（管道 MacDesk.MenuHost，每请求一次连接，US 分隔，无应答）。
+/// 切换需重启 MacDesk（host 按启动时的设置选一种循环）。
 /// </summary>
 internal static class MenuHost
 {
     private const string PipeName = "MacDesk.MenuHost";
+    private const string PipeNameV2 = "MacDesk.MenuHost.v2";
     private const char US = '\x1F';
+
+    private sealed class Reply
+    {
+        public string Kind { get; set; } = "";
+        public List<MenuSnapshot.Item>? Items { get; set; }
+    }
+
+    // ── 帧 IO（v2 双工协议） ──────────────────────────────────
+
+    private static void WriteFrame(Stream s, byte[] data)
+    {
+        var len = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(len, data.Length);
+        s.Write(len, 0, 4);
+        s.Write(data, 0, data.Length);
+        s.Flush();
+    }
+
+    private static byte[]? ReadFrame(Stream s)
+    {
+        var len = ReadExact(s, 4);
+        if (len == null) return null;
+        int n = BinaryPrimitives.ReadInt32LittleEndian(len);
+        if (n is < 0 or > 64 * 1024 * 1024) return null;
+        return ReadExact(s, n);
+    }
+
+    private static byte[]? ReadExact(Stream s, int n)
+    {
+        var buf = new byte[n];
+        int off = 0;
+        while (off < n)
+        {
+            int r = s.Read(buf, off, n - off);
+            if (r <= 0) return null;
+            off += r;
+        }
+        return buf;
+    }
 
     // ── 客户端（主进程侧） ────────────────────────────────────
 
@@ -51,12 +98,91 @@ internal static class MenuHost
     public static void RequestBackgroundMenu(int x, int y, string folder, IntPtr desktopHwnd) =>
         Request("bg", x, y, desktopHwnd, new[] { folder });
 
-    /// <summary>收起当前打开的菜单（点击别处/开新菜单前调用）。</summary>
+    /// <summary>收起当前打开的菜单（点击别处/开新菜单前调用；只作用于旧路径的 host 菜单，
+    /// v2 主进程菜单同线程模态、点击自然关闭，无需外部收）。</summary>
     public static void Dismiss() => CommandChannel.Signal("DismissMenu");
 
     /// <summary>请求走后台线程：host 死了要重拉时（最长几秒）别卡 UI 线程。</summary>
     private static void Request(string verb, int x, int y, IntPtr desktopHwnd, string[] paths) =>
-        Task.Run(() => RequestCore(verb, x, y, desktopHwnd, paths));
+        Task.Run(() =>
+        {
+            if (Settings.Load().MenuInMainProcess) RequestCoreV2(verb, x, y, desktopHwnd, paths);
+            else RequestCore(verb, x, y, desktopHwnd, paths);
+        });
+
+    // ── 客户端 v2：拿序列化菜单 → 主线程 Track → 回传命令 ─────
+
+    private static void RequestCoreV2(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
+    {
+        // 阶梯耐心同旧版：host 忙（探针/上一个菜单）≠ 死，只有进程真没了才重拉
+        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 1500)) return;
+        bool alive;
+        lock (_lock) alive = _host is { HasExited: false };
+        if (alive && TryExchangeV2(verb, x, y, desktopHwnd, paths, 4000)) return;
+        Log.Write("menu host (v2) unreachable, respawning");
+        lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
+        EnsureSpawned();
+        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000)) return;
+        // 双保险：退化为旧的一次性子进程（host 内 track，settle-wait 路径）
+        Log.Write("menu host (v2) still unreachable, falling back to one-shot helper");
+        FallbackOneShot(verb, x, y, paths);
+    }
+
+    private static bool TryExchangeV2(string verb, int x, int y, IntPtr desktopHwnd, string[] paths, int timeoutMs)
+    {
+        try
+        {
+            using var pipe = new NamedPipeClientStream(".", PipeNameV2, PipeDirection.InOut);
+            pipe.Connect(timeoutMs);
+            var payload = $"{verb}2{US}{x}{US}{y}{US}{(long)desktopHwnd}{US}{string.Join(US, paths)}";
+            WriteFrame(pipe, Encoding.UTF8.GetBytes(payload));
+
+            var replyBytes = ReadFrame(pipe); // host 构建+捕获（首次可能含探针，秒级）
+            if (replyBytes == null) { Log.Write("menu v2: empty reply"); return false; }
+
+            // 应答已到手，之后无论出什么错都不许走阶梯重试——菜单可能已经弹过，
+            // 重试会让它凭空再弹一次（用户视角是灵异事件）
+            try
+            {
+                var reply = JsonSerializer.Deserialize<Reply>(replyBytes);
+                if (reply == null || reply.Kind == "error") { Log.Write("menu v2: host build failed"); return true; }
+
+                List<MenuSnapshot.Item> items;
+                bool shellSide = reply.Kind == "native" && reply.Items != null;
+                if (shellSide)
+                {
+                    items = reply.Items!;
+                    if (verb == "bg") items.AddRange(NativeMenuPresenter.CustomBackgroundItems());
+                }
+                else
+                {
+                    items = NativeMenuPresenter.DegradedFileItems(paths); // 探针判定该类型必崩
+                }
+
+                uint cmd = System.Windows.Application.Current.Dispatcher.Invoke(
+                    () => NativeMenuPresenter.Track(desktopHwnd, items, x, y));
+                Log.Write($"menu v2: {verb} shown ({items.Count} items, kind={reply.Kind}), cmd=0x{cmd:X}");
+
+                bool handledLocally = cmd == 0 || NativeMenuPresenter.DispatchLocal(cmd, paths);
+                if (shellSide)
+                {
+                    var cmdBytes = new byte[4];
+                    BinaryPrimitives.WriteInt32LittleEndian(cmdBytes, handledLocally ? 0 : (int)cmd);
+                    WriteFrame(pipe, cmdBytes); // host 侧 InvokeCommand（或 0 = 直接收工）
+                }
+            }
+            catch (Exception ex) { Log.Write("menu v2 post-reply failed: " + ex.Message); }
+            return true;
+        }
+        catch (TimeoutException) { return false; }
+        catch (Exception ex)
+        {
+            Log.Write($"menu v2 exchange failed: {ex.Message}");
+            return false;
+        }
+    }
+
+    // ── 客户端旧路径（host 内 track） ─────────────────────────
 
     private static void RequestCore(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
     {
@@ -77,6 +203,11 @@ internal static class MenuHost
         if (TrySend(payload, 5000)) return;
         // 双保险：退化为旧的一次性子进程
         Log.Write("menu host still unreachable, falling back to one-shot helper");
+        FallbackOneShot(verb, x, y, paths);
+    }
+
+    private static void FallbackOneShot(string verb, int x, int y, string[] paths)
+    {
         try
         {
             var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
@@ -122,7 +253,7 @@ internal static class MenuHost
         var owner = new MessageWindow(registerHotkey: false);
         _ownerHwnd = owner.Handle;
 
-        // 点别处收菜单：主进程发命名事件，我们给 owner 发 WM_CANCELMODE 结束模态菜单循环。
+        // 点别处收菜单（仅旧路径用）：主进程发命名事件，我们给 owner 发 WM_CANCELMODE。
         // 只在菜单真开着时才 post——线程在两次菜单之间不泵消息，陈旧的 WM_CANCELMODE 会
         // 滞留队列、把下一个菜单秒杀（真机踩坑：菜单永远不显示）。
         CommandChannel.Listen("DismissMenu", () =>
@@ -155,6 +286,67 @@ internal static class MenuHost
         warm.SetApartmentState(ApartmentState.STA);
         warm.Start();
 
+        // 两种循环二选一（按启动时设置；切换需重启 MacDesk）：owner 窗口在本线程，
+        // 构建期间扩展对 owner 的同线程 SendMessage 直接派发，不依赖消息泵。
+        if (Settings.Load().MenuInMainProcess) RunV2Loop();
+        else RunLegacyLoop();
+    }
+
+    /// <summary>v2 循环：构建 → 序列化回传 → 等主进程 Track 结果 → InvokeCommand。</summary>
+    private static void RunV2Loop()
+    {
+        Log.Write("menu host: v2 (serialize-to-main) loop");
+        while (true)
+        {
+            try
+            {
+                using var server = new NamedPipeServerStream(PipeNameV2, PipeDirection.InOut, 1);
+                server.WaitForConnection();
+                var req = ReadFrame(server);
+                if (req == null) continue;
+                var parts = Encoding.UTF8.GetString(req).Split(US);
+                if (parts.Length < 5) continue;
+                var paths = parts.Skip(4).ToArray();
+                Log.Write($"menu host v2: {parts[0]} request ({paths.Length} path(s))");
+
+                bool full = parts[0] == "bg2" || ProbeSafe(paths[0]);
+                if (!full)
+                {
+                    WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "degraded" }));
+                    continue;
+                }
+
+                var sw = Stopwatch.StartNew();
+                using var built = parts[0] == "bg2"
+                    ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
+                    : ShellContextMenu.BuildFileMenu(paths, _ownerHwnd);
+                if (built == null)
+                {
+                    WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "error" }));
+                    continue;
+                }
+                MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0); // 根菜单的 WM_INITMENUPOPUP
+                var items = MenuSnapshot.Capture(built.HMenu, built.MenuObj);
+                WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items }));
+                Log.Write($"menu host v2: captured {items.Count} top-level items in {sw.ElapsedMilliseconds}ms");
+
+                // 菜单在主进程开着期间保持 IContextMenu 存活；用户关菜单后收命令帧
+                var cmdBytes = ReadFrame(server);
+                int cmd = cmdBytes is { Length: 4 } ? BinaryPrimitives.ReadInt32LittleEndian(cmdBytes) : 0;
+                if (cmd is > 0 and <= 0x6FFF)
+                {
+                    ShellContextMenu.InvokeShellCmd(built.MenuObj, cmd - 1, _ownerHwnd);
+                    Log.Write($"menu host v2: invoked shell cmd {cmd}");
+                }
+            }
+            catch (Exception ex) { Log.Write("menu host v2 loop error: " + ex.Message); }
+        }
+    }
+
+    /// <summary>旧循环：host 内 TrackPopupMenu（settle-wait + 瞬灭重试）。</summary>
+    private static void RunLegacyLoop()
+    {
+        Log.Write("menu host: legacy (in-host track) loop");
         while (true)
         {
             try

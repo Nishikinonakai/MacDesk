@@ -88,6 +88,18 @@ public partial class App : Application
             return; // 进程存活，host 循环在专用线程里跑
         }
 
+        // 菜单结构侦察：构建 bg + 指定文件菜单（不显示），结构树写日志
+        // --menudump [path ...]
+        int md = Array.IndexOf(e.Args, "--menudump");
+        if (md >= 0)
+        {
+            var dmw = new MessageWindow(registerHotkey: false);
+            Services.ShellContextMenu.DumpMenus(e.Args.Skip(md + 1).ToArray(), dmw.Handle);
+            dmw.Dispose();
+            Environment.Exit(0);
+            return;
+        }
+
         // 菜单安全性探针（牺牲进程）：只 QueryContextMenu 不显示，崩了就崩（host 看退出码）
         // --menuprobe <path>
         int mp = Array.IndexOf(e.Args, "--menuprobe");

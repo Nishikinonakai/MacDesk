@@ -289,13 +289,28 @@ internal static class ShellContextMenu
         finally { DestroyMenu(hMenu); }
     }
 
-    /// <summary>文件项菜单。多个路径必须同属一个父文件夹（调用方保证）。</summary>
-    public static void Show(string[] paths, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
+    /// <summary>构建好的 shell 菜单：HMENU + 活的 IContextMenu（Invoke 用）+ 待释放 pidl。</summary>
+    internal sealed class BuiltShellMenu : IDisposable
     {
-        if (paths.Length == 0) return;
+        public IntPtr HMenu;
+        public object MenuObj = null!;
+        public IntPtr[] Pidls = Array.Empty<IntPtr>();
+
+        public void Dispose()
+        {
+            if (HMenu != IntPtr.Zero) { DestroyMenu(HMenu); HMenu = IntPtr.Zero; }
+            foreach (var p in Pidls) if (p != IntPtr.Zero) CoTaskMemFree(p);
+            Pidls = Array.Empty<IntPtr>();
+        }
+    }
+
+    /// <summary>只构建不显示：文件项菜单（多个路径必须同属一个父文件夹，调用方保证）。</summary>
+    public static BuiltShellMenu? BuildFileMenu(string[] paths, IntPtr ownerHwnd)
+    {
+        if (paths.Length == 0) return null;
         var pidls = new IntPtr[paths.Length];
         var children = new IntPtr[paths.Length];
-        IntPtr hMenu = IntPtr.Zero;
+        var built = new BuiltShellMenu { Pidls = pidls };
         try
         {
             var iidFolder = IID_IShellFolder;
@@ -303,9 +318,9 @@ internal static class ShellContextMenu
             for (int i = 0; i < paths.Length; i++)
             {
                 SHParseDisplayName(paths[i], IntPtr.Zero, out pidls[i], 0, out _);
-                if (pidls[i] == IntPtr.Zero) { Log.Write($"file menu: parse failed for {paths[i]}"); return; }
+                if (pidls[i] == IntPtr.Zero) { Log.Write($"file menu: parse failed for {paths[i]}"); built.Dispose(); return null; }
                 if (SHBindToParent(pidls[i], ref iidFolder, out object fo, out children[i]) != 0)
-                { Log.Write($"file menu: SHBindToParent failed for {paths[i]}"); return; }
+                { Log.Write($"file menu: SHBindToParent failed for {paths[i]}"); built.Dispose(); return null; }
                 folderObj ??= fo; // 同父，取第一个
             }
             var folder = (IShellFolder)folderObj!;
@@ -313,30 +328,73 @@ internal static class ShellContextMenu
             var iidMenu = IID_IContextMenu;
             object menuObj;
             int hr;
-            hMenu = CreatePopupMenu();
+            built.HMenu = CreatePopupMenu();
             using (new ManagedHandlerShield())
             {
                 folder.GetUIObjectOf(ownerHwnd, (uint)paths.Length, children, ref iidMenu, IntPtr.Zero, out menuObj);
-                hr = ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+                hr = ((IContextMenu)menuObj).QueryContextMenu(built.HMenu, 0, 1, 0x6FFF, CMF_NORMAL);
             }
-            var menu = (IContextMenu)menuObj;
-            if (hr < 0) { Log.Write($"file menu: QueryContextMenu hr=0x{hr:X8}"); return; }
-            StripBlacklisted(hMenu);
+            if (hr < 0) { Log.Write($"file menu: QueryContextMenu hr=0x{hr:X8}"); built.Dispose(); return null; }
+            built.MenuObj = menuObj;
+            StripBlacklisted(built.HMenu);
+            return built;
+        }
+        catch (Exception ex) { Log.Write("file menu build failed: " + ex); built.Dispose(); return null; }
+    }
 
-            _activeMenu = menuObj;
+    /// <summary>跨进程回传的 shell 命令 id → 同一个 IContextMenu 实例执行。</summary>
+    public static void InvokeShellCmd(object menuObj, int verbOffset, IntPtr owner) =>
+        Invoke((IContextMenu)menuObj, verbOffset, owner);
+
+    /// <summary>侦察模式（--menudump [path ...]）：构建背景菜单与给定文件的菜单，
+    /// 强制填充懒加载子菜单后把结构树写日志——序列化路径按真机数据设计，不靠猜。</summary>
+    public static void DumpMenus(string[] paths, IntPtr ownerHwnd)
+    {
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using (var bg = BuildBackgroundMenu(DesktopItemProvider.UserDesktop, ownerHwnd))
+            {
+                if (bg != null)
+                {
+                    MenuSnapshot.ForceInit(bg.MenuObj, bg.HMenu, 0);
+                    var items = MenuSnapshot.Capture(bg.HMenu, bg.MenuObj);
+                    Log.Write($"=== menudump bg ({sw.ElapsedMilliseconds}ms) ===");
+                    MenuSnapshot.DumpLog(items);
+                }
+                else Log.Write("menudump: bg build failed");
+            }
+            foreach (var p in paths)
+            {
+                sw.Restart();
+                using var fm = BuildFileMenu(new[] { p }, ownerHwnd);
+                if (fm == null) { Log.Write($"menudump: file build failed for {p}"); continue; }
+                MenuSnapshot.ForceInit(fm.MenuObj, fm.HMenu, 0);
+                var items = MenuSnapshot.Capture(fm.HMenu, fm.MenuObj);
+                Log.Write($"=== menudump file {p} ({sw.ElapsedMilliseconds}ms) ===");
+                MenuSnapshot.DumpLog(items);
+            }
+        }
+        catch (Exception ex) { Log.Write("menudump failed: " + ex); }
+    }
+
+    /// <summary>文件项菜单（旧路径：host 内 TrackPopupMenu，settle-wait+重试兜前台风暴）。</summary>
+    public static void Show(string[] paths, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
+    {
+        try
+        {
+            using var built = BuildFileMenu(paths, ownerHwnd);
+            if (built == null) return;
+
+            _activeMenu = built.MenuObj;
             int cmd;
-            try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
+            try { cmd = TrackWithRetry(built.HMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"file menu shown for {paths.Length} item(s), cmd={cmd}");
-            if (cmd > 0) Invoke(menu, cmd - 1, ownerHwnd);
+            if (cmd > 0) Invoke((IContextMenu)built.MenuObj, cmd - 1, ownerHwnd);
         }
         catch (Exception ex) { Log.Write("file menu failed: " + ex); }
-        finally
-        {
-            if (hMenu != IntPtr.Zero) DestroyMenu(hMenu);
-            foreach (var p in pidls) if (p != IntPtr.Zero) CoTaskMemFree(p);
-        }
     }
 
     // ── 托管 shell 扩展隔离 ───────────────────────────────────
@@ -496,16 +554,18 @@ internal static class ShellContextMenu
         catch { }
     }
 
-    /// <summary>桌面背景菜单（新建/粘贴/查看等）+ MacDesk 自定义项。</summary>
-    public static void ShowBackground(string folderPath, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
+    /// <summary>只构建不显示：桌面背景 shell 菜单（新建/粘贴/查看等，不含 MacDesk 自定义项）。</summary>
+    public static BuiltShellMenu? BuildBackgroundMenu(string folderPath, IntPtr ownerHwnd)
     {
-        IntPtr pidl = IntPtr.Zero, hMenu = IntPtr.Zero;
+        IntPtr pidl = IntPtr.Zero;
+        var built = new BuiltShellMenu();
         try
         {
             SHGetDesktopFolder(out object desktopObj);
             var desktop = (IShellFolder)desktopObj;
             SHParseDisplayName(folderPath, IntPtr.Zero, out pidl, 0, out _);
-            if (pidl == IntPtr.Zero) return;
+            if (pidl == IntPtr.Zero) return null;
+            built.Pidls = new[] { pidl };
 
             var iidFolder = IID_IShellFolder;
             desktop.BindToObject(pidl, IntPtr.Zero, ref iidFolder, out object folderObj);
@@ -514,15 +574,28 @@ internal static class ShellContextMenu
             var iidMenu = IID_IContextMenu;
             object menuObj;
             int hr;
-            hMenu = CreatePopupMenu();
+            built.HMenu = CreatePopupMenu();
             using (new ManagedHandlerShield())
             {
                 folder.CreateViewObject(ownerHwnd, ref iidMenu, out menuObj);
-                hr = ((IContextMenu)menuObj).QueryContextMenu(hMenu, 0, 1, 0x6FFF, CMF_NORMAL);
+                hr = ((IContextMenu)menuObj).QueryContextMenu(built.HMenu, 0, 1, 0x6FFF, CMF_NORMAL);
             }
-            var menu = (IContextMenu)menuObj;
-            if (hr < 0) { Log.Write($"bg menu: QueryContextMenu hr=0x{hr:X8}"); return; }
-            StripBlacklisted(hMenu);
+            if (hr < 0) { Log.Write($"bg menu: QueryContextMenu hr=0x{hr:X8}"); built.Dispose(); return null; }
+            built.MenuObj = menuObj;
+            StripBlacklisted(built.HMenu);
+            return built;
+        }
+        catch (Exception ex) { Log.Write("bg menu build failed: " + ex); built.Dispose(); return null; }
+    }
+
+    /// <summary>桌面背景菜单（旧路径：host 内 TrackPopupMenu）+ MacDesk 自定义项。</summary>
+    public static void ShowBackground(string folderPath, IntPtr ownerHwnd, int screenX, int screenY, IntPtr desktopHwnd = default)
+    {
+        try
+        {
+            using var built = BuildBackgroundMenu(folderPath, ownerHwnd);
+            if (built == null) return;
+            var hMenu = built.HMenu;
 
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_ARRANGE, "按 mac 式网格整理");
@@ -543,7 +616,7 @@ internal static class ShellContextMenu
                 (UIntPtr)ID_AUTOSTART, "开机自启");
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_QUIT, "退出 MacDesk (Ctrl+Alt+Q)");
 
-            _activeMenu = menuObj;
+            _activeMenu = built.MenuObj;
             int cmd;
             try { cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
             finally { _activeMenu = null; }
@@ -562,15 +635,10 @@ internal static class ShellContextMenu
                 case ID_SORT_SIZE: CommandChannel.Signal("SortSize"); return;
                 case ID_SORT_KIND: CommandChannel.Signal("SortKind"); return;
                 case ID_QUIT: CommandChannel.Signal("Quit"); return;
-                default: Invoke(menu, cmd - 1, ownerHwnd); return;
+                default: Invoke((IContextMenu)built.MenuObj, cmd - 1, ownerHwnd); return;
             }
         }
         catch (Exception ex) { Log.Write("bg menu failed: " + ex); }
-        finally
-        {
-            if (hMenu != IntPtr.Zero) DestroyMenu(hMenu);
-            if (pidl != IntPtr.Zero) CoTaskMemFree(pidl);
-        }
     }
 
     private static void Invoke(IContextMenu menu, int verbOffset, IntPtr owner)

@@ -42,8 +42,9 @@ internal sealed class MessageWindow : IDisposable
     {
         switch (msg)
         {
-            // shell 菜单的 owner-draw 项（Win11 上是全部项）必须转发给 IContextMenu2.HandleMenuMsg，
-            // 否则弹出的是一块空白菜单；"新建"子菜单的填充也靠 WM_INITMENUPOPUP 转发
+            // shell 菜单消息必须转发给 IContextMenu2.HandleMenuMsg（仅旧的 host 内 track 路径用；
+            // --menudump 真机实测 26200 的菜单项全是普通文本项+静态位图、零 owner-draw，
+            // 但"新建/发送到"等子菜单的懒填充靠 WM_INITMENUPOPUP，不转发就是空的）
             case 0x0117 /* WM_INITMENUPOPUP */ or 0x002B /* WM_DRAWITEM */
               or 0x002C /* WM_MEASUREITEM */ or 0x0120 /* WM_MENUCHAR */:
                 var (fwdHandled, fwdResult) = Services.ShellContextMenu.ForwardMenuMessage(msg, wParam, lParam);

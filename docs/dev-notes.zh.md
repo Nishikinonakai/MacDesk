@@ -260,3 +260,55 @@ macOS 钥匙串里迁移过来的 GitHub OAuth token（`security find-internet-p
 - 测试插曲：两轮注入回归全落在机主打开的记事本窗口上（机主正实时看 macdesk.log）——
   **注入测试前必须查 idle + 截屏确认桌面无遮挡**（老规矩，这次违反了）。新构建的手感
   以机主实测为准；若仍有 insta-cancel，日志会带凶手类名。
+
+## 2026-07-07 凌晨：菜单序列化进主进程（前台战争终极解，真机全回归通过）
+
+机主实测反馈：settle-wait 版（8f7cac3）拖拽后立即右键仍偶发"大方框闪现即灭"——
+菜单窗口已创建、绘制中途被迟到的激活风暴掐死；拖拽后的风暴比 300ms 等待上限更长，
+重试也会被连击耗尽。时序补丁类方案永远有洞，按既定计划上终极方案。
+
+**架构（v2，settings.MenuInMainProcess 默认开）**：
+- host 只构建不显示：QueryContextMenu（第三方扩展隔离不变）→ `MenuSnapshot.ForceInit`
+  对每个子菜单强制喂 WM_INITMENUPOPUP（"新建/发送到/7-Zip"等懒填充离线展开，真机验证
+  可行）→ `MenuSnapshot.Capture` 把 HMENU 摘成纯数据树（文本/状态/hbmpItem 位图 BGRA
+  往返）→ 帧协议（4 字节长度前缀）经管道 `MacDesk.MenuHost.v2` 回主进程。
+- 主进程 UI 线程 `MenuSnapshot.Build` 重建原生 HMENU + 追加自定义项（勾选态直读本进程
+  Settings，不再跨进程）→ `NativeMenuPresenter.Track` 同线程 TrackPopupMenuEx。
+  选中的 shell 命令 id 回传 host 由同一 IContextMenu 实例 InvokeCommand（崩溃隔离不变）；
+  0x7xxx 本地命令直接 CommandChannel.Signal 进程内闭环。降级菜单也移到主进程本地构建。
+- **为什么杀不掉**：主窗口 SetParent 挂 DefView（跨进程 SetParent = 与 Explorer 桌面线程
+  共享输入队列），菜单模态循环在自己线程、owner 是自己——激活风暴两站（主窗口→Progman）
+  都落在共享队列内，不构成 owner 失活；杂散 WM_CANCELMODE 由 MainWindow 钩子在
+  MenuOpen 期间吞掉（点击外部的正常关闭走菜单自身捕获判定，不经这条路，实测不受影响）。
+- 旧路径完整保留：settings.json `MenuInMainProcess:false` + 重启 = 回退 host 内 track
+  （settle-wait+重试），免重建逃生口。
+
+**真机侦察推翻旧认知（--menudump 模式，留作诊断工具）**：26200 的 shell 菜单项
+**全部是普通 MFT_STRING + 静态 hbmpItem 位图，零 owner-draw**（MessageWindow 旧注释
+"Win11 全部项 owner-draw"是误判）——序列化走文本+位图即像素级还原。owner-draw 渲染
+捕获路径（合成 WM_MEASUREITEM/WM_DRAWITEM 进内存 DC，normal/selected 两态）已实现
+留作其他机器兜底。
+
+**两个新坑（都已修）**：
+- **子菜单白块**：TPM_NOANIMATION 只管顶层弹出，子菜单自带淡入动画，非前台线程动画
+  不渲染 → 白块、划过哪行显影哪行（与深夜批次顶层白块同病）。修 = owner 收
+  WM_INITMENUPOPUP 后 SetTimer 50ms×6 拍，对所有可见 #32768 菜单窗口 RedrawWindow
+  (INVALIDATE|ERASE|FRAME|UPDATENOW)。修后子菜单落地即完整绘制。
+- **键盘进不了菜单**：焦点在 Explorer 侧时方向键/Esc 不进同线程菜单循环。修 = Track 前
+  SetFocus(owner)。旧 host 路径禁 SetFocus 是因为 WPF 拿焦点异步夺前台杀别进程的菜单；
+  同线程菜单里该激活落在自己身上无杀伤力。修后 Esc/方向键/Enter 全通。
+
+**真机回归（injection，双屏在接，机主 idle>300s 才动手）**：①空白右键背景菜单完整
+（shell 项+自定义项+勾选态+图标）；②点击外部关闭正常；③**拖拽后立即右键 + 80ms 风暴
+窗口内连续 4 击全部一次开成、每个菜单活满脚本设定寿命、零瞬灭**（v2 无重试机制也不需要）；
+④"新建"子菜单懒填充完整（Word/PPT/Excel/ZIP 模板项+图标）；⑤键盘 ↓↓Enter 选"New Folder"
+真建出文件夹（InvokeCommand 回传链路）；⑥.txt 文件菜单 35 项完整原生（迅雷/火绒/网盘/
+7-Zip/ToDesk 齐全）。捕获耗时：bg 首次 174ms、预热后 84ms，文件菜单 142ms（35 项）。
+测试产物已清理，桌面与部署前逐像素一致（仅任务栏时钟区有 diff）。
+
+**顺手发现的新 bug（未修，backlog）**：新建文件的种子落位不避让已占格——MacDeskTest.txt
+直接叠在既有 New Folder 同一格上（自由摆放模式）。种子应过 NearestFreeCell。
+
+**backlog 补充**：v2 使深色菜单跟随（uxtheme #135/#136）变trivial——菜单在主进程，
+SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可见，未启用）；
+菜单序列化也为"设置 GUI 菜单项屏蔽"铺平了路（数据树在手，过滤即所得）。
