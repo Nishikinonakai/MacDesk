@@ -26,4 +26,28 @@ internal static class ShellCom
         [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
         [PreserveSig] int HandleMenuMsg2(uint uMsg, IntPtr wParam, IntPtr lParam, IntPtr plResult);
     }
+
+    // ── 快捷方式解析（IShellLinkW 只用到 vtable 第一个方法 GetPath） ──
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    internal class ShellLink { }
+
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IShellLinkW
+    {
+        [PreserveSig]
+        int GetPath([MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+        // 其余方法本项目用不到，不声明（只按 vtable 顺序调用第一个是安全的）
+    }
+
+    [ComImport, Guid("0000010b-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IPersistFile
+    {
+        void GetClassID(out Guid pClassID);
+        [PreserveSig] int IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string? pszFileName, bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile(out IntPtr ppszFileName);
+    }
 }

@@ -181,6 +181,9 @@ public partial class App : Application
         // 预热常驻菜单 host：shell 扩展 DLL 现在加载，右键菜单零冷启动
         Services.MenuHost.EnsureSpawned();
 
+        // 菜单深色模式跟随（v2 菜单在本进程弹出才有意义；浅色主题下无可见变化）
+        Services.ShellContextMenu.EnableModernMenuTheme();
+
         base.OnStartup(e);
 
         // 每显示器一个桌面窗口；主屏窗口是 Application.MainWindow（它关闭 = 整个进程退出）

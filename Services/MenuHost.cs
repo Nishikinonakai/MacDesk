@@ -159,8 +159,11 @@ internal static class MenuHost
                     items = NativeMenuPresenter.DegradedFileItems(paths); // 探针判定该类型必崩
                 }
 
-                uint cmd = System.Windows.Application.Current.Dispatcher.Invoke(
-                    () => NativeMenuPresenter.Track(desktopHwnd, items, x, y));
+                uint cmd = System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                {
+                    if (verb == "files") NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
+                    return NativeMenuPresenter.Track(desktopHwnd, items, x, y);
+                });
                 Log.Write($"menu v2: {verb} shown ({items.Count} items, kind={reply.Kind}), cmd=0x{cmd:X}");
 
                 bool handledLocally = cmd == 0 || NativeMenuPresenter.DispatchLocal(cmd, paths);

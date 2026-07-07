@@ -168,6 +168,7 @@ public partial class MainWindow : Window
         CommandChannel.Listen("SortSize", () => Dispatcher.BeginInvoke(() => SortArrangeAll("size")));
         CommandChannel.Listen("SortKind", () => Dispatcher.BeginInvoke(() => SortArrangeAll("kind")));
         CommandChannel.Listen("Quit", () => Dispatcher.BeginInvoke(App.BeginUserQuit));
+        CommandChannel.Listen("OpenSettings", () => Dispatcher.BeginInvoke(SettingsWindow.ShowSingleton));
 
         // 降级文件菜单（原生菜单被崩溃扩展拖垮时）的核心动词：对当前选中执行
         CommandChannel.Listen("OpenSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.OpenSelectionItems()));
@@ -356,8 +357,8 @@ public partial class MainWindow : Window
             handled = true;
             return IntPtr.Zero;
         }
-        // 子菜单白块修复：每个弹出落地后强制重绘几拍（见 NativeMenuPresenter）
-        if (msg is 0x0117 /* WM_INITMENUPOPUP */) NativeMenuPresenter.OnInitMenuPopup(hwnd);
+        // 子菜单白块修复：新弹出的子菜单窗口补绘一次（见 NativeMenuPresenter）
+        if (msg is 0x0117 /* WM_INITMENUPOPUP */) NativeMenuPresenter.OnInitMenuPopup(hwnd, wParam);
         if (msg is 0x0113 /* WM_TIMER */ && NativeMenuPresenter.OnTimer(hwnd, wParam))
         {
             handled = true;

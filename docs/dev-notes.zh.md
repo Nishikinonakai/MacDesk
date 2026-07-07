@@ -328,3 +328,33 @@ SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可
 - **机主晨间自测（08:25，被动观测）**：菜单序列化版上线后机主 2 秒内连开 3 个背景菜单 +
   2 个 42 项文件菜单，全部正常开出关闭（cmd=0 快速浏览），日志零异常——正是原"时灵时不灵"
   场景，首次经受机主本人连击。
+
+## 2026-07-07 上午：菜单闪烁修复 + 设置 GUI + LE 兼容项 + 深色菜单（真机全验证）
+
+机主反馈：菜单打开后项目会"闪烁几次"，观感差。
+
+- **闪烁根因 = 白块补绘过度**：昨夜的子菜单白块修复对**所有**可见菜单窗口无差别连刷 6 拍
+  且带 RDW_ERASE——已经画好的主菜单被反复"擦背景+重绘"，肉眼可见闪烁。修 = 精准补绘：
+  ①WM_INITMENUPOPUP 时快照"弹出前已可见的菜单窗口"（_preExisting，已画好，全程不碰）；
+  ②只对本次新弹出的子菜单窗口补绘，且**只有首拍带 ERASE**（空白窗口擦除无闪烁代价），
+  后续拍只 INVALIDATE|UPDATENOW（对已画好内容重绘同像素，肉眼不可见）；③顶层菜单
+  （== Current.Handle，TPM_NOANIMATION 已即时绘制）直接跳过。**真机验证：子菜单开着时
+  连拍 5 帧，帧 2-5 逐像素 diff=0（完全静止），主菜单零闪烁；子菜单本身完整绘制。**
+  多拍仍需要（分层窗口淡入期太早的补绘不上屏），改 60ms×5。
+- **设置 GUI v1 交付**（机主点名，settings.json 手编的替代）：`SettingsWindow.cs`，代码构
+  WPF UI、改动即存、共享 Desktop.Config 实例（勾选态与右键菜单同源）。含：自由摆放/开机
+  自启/菜单在主进程弹出三开关 + 菜单项屏蔽列表（增删，回车即添加）。背景菜单加"MacDesk
+  设置…"项（0x700B → CommandChannel "OpenSettings" → 主进程 UI 线程 ShowSingleton）。
+  单例，居中主屏。真机验证：菜单点击开出、UI 完整渲染、列表显示现有黑名单 AMD Software。
+  **测试坑：窗口 CenterScreen 落主屏（Dell 物理 0-1920），别拿副屏坐标裁截图找不到。**
+- **深色菜单跟随启用**：v2 菜单在主进程弹出，`EnableModernMenuTheme`（uxtheme #135
+  SetPreferredAppMode(AllowDark) + #136 FlushMenuThemes）在 OnStartup 调一次即生效。
+  真机确认菜单变深色（机主当前浅色系统主题下菜单仍跟随出深色——SAB/EP 同款观感）。
+- **Locale Emulator 兼容项**（原 backlog）：LE 的托管扩展在我们进程必炸（长期屏蔽），
+  LE 自己的菜单项无法出现。补偿 = 检测 LE 已装（CLSID InprocServer32 的 CodeBase 找到
+  LEProc.exe）且右键目标是 .exe 或解析到 .exe 的 .lnk（IShellLinkW.GetPath，STA 线程内
+  解析）时，文件菜单尾部自绘"用 Locale Emulator 运行" → `LEProc.exe -run <真实exe路径>`。
+  **真机确认 CLI：`LEProc -run <系统真实exe全路径>` 有效且 LEProc 驻留等子进程（fire-and-forget，
+  别 Wait）；传复制出来的 exe 副本会被 LE 拒绝（早先假阴性的原因）。** Feishu.lnk 右键真机
+  见到该项 + 完整原生菜单 + 深色主题。
+- 文件菜单项数：42 shell → +分隔线+LE 项 = 44；背景菜单 16 → +设置项 = 17（日志实录）。

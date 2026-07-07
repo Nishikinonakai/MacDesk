@@ -26,7 +26,8 @@ internal static class ShellContextMenu
     // 自定义菜单命令 ID（> QueryContextMenu 的 idCmdLast）
     private const uint ID_ARRANGE = 0x7001, ID_UNDO = 0x7002, ID_TOGGLE = 0x7003, ID_QUIT = 0x7004,
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
-                       ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A;
+                       ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
+                       ID_SETTINGS = 0x700B;
 
     [ComImport, Guid("000214E6-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellFolder
@@ -614,6 +615,7 @@ internal static class ShellContextMenu
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_TOGGLE, "显示/隐藏原生图标");
             AppendMenuW(hMenu, MF_STRING | (Autostart.IsEnabled() ? MF_CHECKED : 0),
                 (UIntPtr)ID_AUTOSTART, "开机自启");
+            AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_SETTINGS, "MacDesk 设置…");
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_QUIT, "退出 MacDesk (Ctrl+Alt+Q)");
 
             _activeMenu = built.MenuObj;
@@ -635,6 +637,7 @@ internal static class ShellContextMenu
                 case ID_SORT_SIZE: CommandChannel.Signal("SortSize"); return;
                 case ID_SORT_KIND: CommandChannel.Signal("SortKind"); return;
                 case ID_QUIT: CommandChannel.Signal("Quit"); return;
+                case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return;
                 default: Invoke((IContextMenu)built.MenuObj, cmd - 1, ownerHwnd); return;
             }
         }
