@@ -39,7 +39,7 @@ jobs:
           $ver = '${{ github.ref_name }}'.TrimStart('v')
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { choco install innosetup -y --no-progress }
-          & $iscc /DMyAppVersion=$ver /DSourceDir="$PWD\publish" installer\macdesk.iss
+          & $iscc /DMyAppVersion=$ver /DSourceDir="$PWD\publish" /O"$PWD" installer\macdesk.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Create release

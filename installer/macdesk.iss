@@ -39,9 +39,8 @@ VersionInfoVersion={#MyAppVersion}
 CloseApplications=no
 
 [Languages]
-#if FileExists(AddBackslash(CompilerPath) + "Languages\ChineseSimplified.isl")
+; ChineseSimplified 自 Inno 6.4 转正为官方语言（CI 的 6.7.1 自带）；缺文件=编译报错可见
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
-#endif
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
