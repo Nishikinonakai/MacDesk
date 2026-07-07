@@ -28,7 +28,8 @@ internal static class ShellContextMenu
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
                        ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C,
-                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E;
+                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E,
+                       ID_GROUP_DATE = 0x700F, ID_GROUP_SIZE = 0x7010;
 
     [ComImport, Guid("000214E6-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellFolder
@@ -609,7 +610,9 @@ internal static class ShellContextMenu
             {
                 AppendMenuW(hMenu, MF_STRING | MF_CHECKED, (UIntPtr)ID_STACKS, "使用叠放");
                 IntPtr hGroup = CreatePopupMenu();
-                AppendMenuW(hGroup, MF_STRING | MF_CHECKED, (UIntPtr)ID_GROUP_KIND, "类型");
+                AppendMenuW(hGroup, MF_STRING | (cfg.StackGroupBy == "kind" ? MF_CHECKED : 0), (UIntPtr)ID_GROUP_KIND, "类型");
+                AppendMenuW(hGroup, MF_STRING | (cfg.StackGroupBy == "date" ? MF_CHECKED : 0), (UIntPtr)ID_GROUP_DATE, "修改日期");
+                AppendMenuW(hGroup, MF_STRING | (cfg.StackGroupBy == "size" ? MF_CHECKED : 0), (UIntPtr)ID_GROUP_SIZE, "大小");
                 AppendMenuW(hMenu, MF_POPUP, (UIntPtr)(ulong)hGroup, "分组依据");
             }
             else
@@ -652,7 +655,9 @@ internal static class ShellContextMenu
                 case ID_QUIT: CommandChannel.Signal("Quit"); return;
                 case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return;
                 case ID_STACKS: CommandChannel.Signal("ToggleStacks"); return;
-                case ID_GROUP_KIND: return; // v1 只有"类型"
+                case ID_GROUP_KIND: CommandChannel.Signal("GroupKind"); return;
+                case ID_GROUP_DATE: CommandChannel.Signal("GroupDate"); return;
+                case ID_GROUP_SIZE: CommandChannel.Signal("GroupSize"); return;
                 case ID_PERSONALIZE:
                     try
                     {

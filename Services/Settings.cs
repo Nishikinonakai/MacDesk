@@ -19,6 +19,10 @@ internal sealed class Settings
     /// 开启期间不写规范布局，关闭即恢复原摆放。</summary>
     public bool UseStacks { get; set; }
 
+    /// <summary>叠放的分组依据："kind"（类型，默认）/"date"（修改日期）/"size"（大小）。
+    /// 只在 UseStacks 时生效。</summary>
+    public string StackGroupBy { get; set; } = "kind";
+
     /// <summary>菜单序列化进主进程同线程弹出（前台战争终极解）。false = 回退旧 host 内
     /// TrackPopupMenu 路径（settle-wait+重试），新路径出问题时的免重建逃生口。</summary>
     public bool MenuInMainProcess { get; set; } = true;
@@ -49,6 +53,8 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("AccentColor", out var ac) && ac.ValueKind == JsonValueKind.String)
                     s.AccentColor = ac.GetString()!;
                 if (doc.RootElement.TryGetProperty("UseStacks", out var us)) s.UseStacks = us.GetBoolean();
+                if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
+                    s.StackGroupBy = gb.GetString()!;
             }
         }
         catch { }
@@ -60,7 +66,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

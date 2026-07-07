@@ -175,6 +175,9 @@ public partial class MainWindow : Window
             Config.Save();
             Desktop.LayoutAllWindows(animated: true);
         }));
+        CommandChannel.Listen("GroupKind", () => Dispatcher.BeginInvoke(() => SetStackGroupBy("kind")));
+        CommandChannel.Listen("GroupDate", () => Dispatcher.BeginInvoke(() => SetStackGroupBy("date")));
+        CommandChannel.Listen("GroupSize", () => Dispatcher.BeginInvoke(() => SetStackGroupBy("size")));
 
         // 降级文件菜单（原生菜单被崩溃扩展拖垮时）的核心动词：对当前选中执行
         CommandChannel.Listen("OpenSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.OpenSelectionItems()));
@@ -731,6 +734,11 @@ public partial class MainWindow : Window
         public TextBlock Label = null!;
         public Border LabelPlate = null!;
         public string? FrontPath, MidPath, BackPath; // 已加载的真实图标路径缓存，跳过重复取图
+        // hover 刮擦预览（macOS scrub）状态：横向划过堆时前层临时轮换成员图标，移出复位
+        public List<IconVisual> Members = new();
+        public bool IsGeneric;
+        public int ScrubIndex = -1; // -1 = 未在刮擦，静息态
+        public ImageSource? RestingFrontIcon;
     }
 
     private readonly Dictionary<string, PileVisual> _stackPiles = new();
@@ -753,6 +761,48 @@ public partial class MainWindow : Window
             if (exts.Contains(ext)) return kind;
         return OtherKind;
     }
+
+    // ── 分组依据 v2：修改日期 / 大小（机主认可方向，菜单 ID 早留了 0x700E 起） ──
+    // 与"类型"不同，这两种分组下每一档都是真实文件的正常聚合，没有"其他"式的混杂兜底：
+    // UpdatePileVisual 只在 StackGroupBy=="kind" 且档名==OtherKind 时才退化成语义占位。
+
+    private static readonly string[] DateBuckets = { "今天", "昨天", "本周", "本月", "更早" };
+    private static readonly string[] SizeBuckets = { "小型", "中型", "大型", "超大型" };
+
+    private static string StackDateBucketOf(DesktopEntry en)
+    {
+        DateTime t;
+        try { t = File.GetLastWriteTime(en.Path); } catch { return DateBuckets[^1]; }
+        int days = (DateTime.Now.Date - t.Date).Days;
+        return days switch
+        {
+            <= 0 => DateBuckets[0],
+            1 => DateBuckets[1],
+            <= 7 => DateBuckets[2],
+            <= 30 => DateBuckets[3],
+            _ => DateBuckets[4],
+        };
+    }
+
+    private static string StackSizeBucketOf(DesktopEntry en)
+    {
+        long sz;
+        try { sz = new FileInfo(en.Path).Length; } catch { return SizeBuckets[0]; }
+        const long MB = 1024L * 1024, GB = 1024 * MB;
+        if (sz < MB) return SizeBuckets[0];
+        if (sz < 100 * MB) return SizeBuckets[1];
+        if (sz < GB) return SizeBuckets[2];
+        return SizeBuckets[3];
+    }
+
+    /// <summary>当前分组依据下的分类函数 + 档位显示顺序，供 LayoutStacks 统一驱动。</summary>
+    private static (Func<DesktopEntry, string> Classify, IEnumerable<string> Order) StackGrouping() =>
+        Config.StackGroupBy switch
+        {
+            "date" => (StackDateBucketOf, DateBuckets),
+            "size" => (StackSizeBucketOf, SizeBuckets),
+            _ => (StackKindOf, StackKindTable.Select(k => k.Kind).Append(OtherKind)),
+        };
 
     private void ClearStacks()
     {
@@ -785,11 +835,12 @@ public partial class MainWindow : Window
             MoveIcon(iv, l, t, animated);
         }
 
+        var (classify, order) = StackGrouping();
         var groups = _icons.Values.Where(i => !IsSingle(i))
-            .GroupBy(i => StackKindOf(i.Entry))
+            .GroupBy(i => classify(i.Entry))
             .ToDictionary(g => g.Key,
                 g => g.OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList());
-        var kindOrder = StackKindTable.Select(k => k.Kind).Append(OtherKind).Where(groups.ContainsKey).ToList();
+        var kindOrder = order.Where(groups.ContainsKey).ToList();
         if (_expandedStack != null && !kindOrder.Contains(_expandedStack)) _expandedStack = null; // 展开中的堆消失（清空/改型）
 
         // 收起动画的"飞回堆位"批次：动画播完才 Collapsed。定时器触发时用当前 _expandedStack
@@ -979,15 +1030,37 @@ public partial class MainWindow : Window
             Label = label, LabelPlate = labelPlate,
         };
         _stackPiles[kind] = pv;
+
+        // hover 刮擦预览（macOS scrub）：横向划过堆时前层轮换显示成员真实图标，不需要额外
+        // 取图——每个成员桌面图标本就常驻加载了自己的 Image.Source，直接借用。
+        root.MouseMove += (_, e) =>
+        {
+            if (pv.IsGeneric || pv.Members.Count < 2) return;
+            double ratio = e.GetPosition(plate).X / plate.Width;
+            int idx = Math.Clamp((int)(ratio * pv.Members.Count), 0, pv.Members.Count - 1);
+            if (idx != pv.ScrubIndex)
+            {
+                pv.ScrubIndex = idx;
+                pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
+            }
+            e.Handled = true;
+        };
+        root.MouseLeave += (_, _) =>
+        {
+            if (pv.ScrubIndex == -1) return;
+            pv.ScrubIndex = -1;
+            pv.IconFront.Source = pv.RestingFrontIcon;
+        };
         return pv;
     }
 
     /// <summary>按分组内容刷新堆的观感：非"其他"用最多 3 个真实成员图标斜向叠放，
     /// "其他"（混杂无连贯身份）用泛用叠层卡片 + 展开箭头。可见标签改两行"类别\nN 项"
-    /// （对照 macOS "Other / 14 items"，不再只藏在 tooltip 里）。</summary>
+    /// （对照 macOS "Other / 14 items"，不再只藏在 tooltip 里）。按日期/大小分组时没有
+    /// "其他"式的混杂兜底概念（每一档都是真实文件），恒用真实图标扇形。</summary>
     private void UpdatePileVisual(PileVisual pile, string kind, List<IconVisual> members)
     {
-        bool generic = kind == OtherKind;
+        bool generic = Config.StackGroupBy == "kind" && kind == OtherKind;
         pile.GenericCard1.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
         pile.GenericCard2.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
         pile.ChevronBadge.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
@@ -1001,7 +1074,13 @@ public partial class MainWindow : Window
             SetLayerIcon(pile.IconFront, ref pile.FrontPath, members[0].Entry.Path);
             if (members.Count >= 2) SetLayerIcon(pile.IconMid, ref pile.MidPath, members[1].Entry.Path);
             if (members.Count >= 3) SetLayerIcon(pile.IconBack, ref pile.BackPath, members[2].Entry.Path);
+            pile.RestingFrontIcon = pile.IconFront.Source;
         }
+
+        // hover 刮擦预览的状态跟着这次布局刷新：成员列表变了就复位（下次 MouseMove 会按新内容重算）
+        pile.Members = members;
+        pile.IsGeneric = generic;
+        pile.ScrubIndex = -1;
 
         pile.Label.Text = $"{kind}\n{members.Count} 项";
     }
@@ -1062,6 +1141,16 @@ public partial class MainWindow : Window
     private static void ToggleFreePlacement()
     {
         Config.FreePlacement = !Config.FreePlacement;
+        Config.Save();
+        Desktop.LayoutAllWindows(animated: true);
+    }
+
+    /// <summary>切换叠放的分组依据（类型/修改日期/大小）：旧分组下展开的堆名字在新分组里
+    /// 不存在，LayoutStacks 会自动清空 _expandedStack 并把成员静默重新分堆——不需要额外处理。</summary>
+    private static void SetStackGroupBy(string mode)
+    {
+        if (Config.StackGroupBy == mode) return;
+        Config.StackGroupBy = mode;
         Config.Save();
         Desktop.LayoutAllWindows(animated: true);
     }

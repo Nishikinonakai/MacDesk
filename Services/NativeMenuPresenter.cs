@@ -156,7 +156,8 @@ internal static class NativeMenuPresenter
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
                        ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C,
-                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E;
+                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E,
+                       ID_GROUP_DATE = 0x700F, ID_GROUP_SIZE = 0x7010;
     private const uint ID_D_OPEN = 0x7101, ID_D_OPENWITH = 0x7102, ID_D_CUT = 0x7103, ID_D_COPY = 0x7104,
                        ID_D_RENAME = 0x7105, ID_D_DELETE = 0x7106, ID_D_PROPS = 0x7107;
 
@@ -179,7 +180,12 @@ internal static class NativeMenuPresenter
                 new MenuSnapshot.Item
                 {
                     Text = "分组依据",
-                    Children = new List<MenuSnapshot.Item> { Cmd(ID_GROUP_KIND, "类型", true) },
+                    Children = new List<MenuSnapshot.Item>
+                    {
+                        Cmd(ID_GROUP_KIND, "类型", cfg.StackGroupBy == "kind"),
+                        Cmd(ID_GROUP_DATE, "修改日期", cfg.StackGroupBy == "date"),
+                        Cmd(ID_GROUP_SIZE, "大小", cfg.StackGroupBy == "size"),
+                    },
                 },
                 Sep(),
                 Cmd(ID_PERSONALIZE, "更换壁纸…"),
@@ -310,7 +316,9 @@ internal static class NativeMenuPresenter
             case ID_QUIT: CommandChannel.Signal("Quit"); return true;
             case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return true;
             case ID_STACKS: CommandChannel.Signal("ToggleStacks"); return true;
-            case ID_GROUP_KIND: return true; // v1 只有"类型"，点了保持原样
+            case ID_GROUP_KIND: CommandChannel.Signal("GroupKind"); return true;
+            case ID_GROUP_DATE: CommandChannel.Signal("GroupDate"); return true;
+            case ID_GROUP_SIZE: CommandChannel.Signal("GroupSize"); return true;
             case ID_PERSONALIZE:
                 try
                 {
