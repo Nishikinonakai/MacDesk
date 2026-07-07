@@ -35,6 +35,14 @@ internal sealed class Settings
     /// 没装/没开 WE 时不做任何事，保持静态壁纸镜像。</summary>
     public bool DynamicWallpaper { get; set; } = true;
 
+    /// <summary>动态壁纸时禁用图标阴影：图标层走软件光栅化，DropShadow 是帧成本大头
+    /// （4K 实测 1031ms→50ms 的差距）。默认开（低配友好）；高配想要阴影可关。</summary>
+    public bool DynamicNoShadows { get; set; } = true;
+
+    /// <summary>动态壁纸时禁用布局动画（展开叠放/整理等改为瞬移）：低配机的帧率保底选项。
+    /// 默认关（动画是 MacDesk 的灵魂，帧率能接受就留着）。</summary>
+    public bool DynamicNoAnimations { get; set; }
+
     /// <summary>自启动用计划任务（onlogon 即启）替代 Run 键，绕过 Windows 对启动项的
     /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。</summary>
     public bool FastAutostart { get; set; }
@@ -63,6 +71,8 @@ internal sealed class Settings
                     s.AccentColor = ac.GetString()!;
                 if (doc.RootElement.TryGetProperty("UseStacks", out var us)) s.UseStacks = us.GetBoolean();
                 if (doc.RootElement.TryGetProperty("DynamicWallpaper", out var dw)) s.DynamicWallpaper = dw.GetBoolean();
+                if (doc.RootElement.TryGetProperty("DynamicNoShadows", out var ns)) s.DynamicNoShadows = ns.GetBoolean();
+                if (doc.RootElement.TryGetProperty("DynamicNoAnimations", out var na)) s.DynamicNoAnimations = na.GetBoolean();
                 if (doc.RootElement.TryGetProperty("FastAutostart", out var fa)) s.FastAutostart = fa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
                     s.StackGroupBy = gb.GetString()!;
@@ -77,7 +87,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, FastAutostart },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

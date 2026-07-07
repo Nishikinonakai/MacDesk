@@ -497,6 +497,19 @@ internal sealed class SettingsWindow : Window
             foreach (var w in Desktop.Windows) w.ApplyWallpaperMode();
         }), "检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。"));
         wall.Children.Add(Separator());
+        wall.Children.Add(Row("使用动态壁纸时禁用图标阴影", Toggle(Config.DynamicNoShadows, v =>
+        {
+            Config.DynamicNoShadows = v;
+            Config.Save();
+            foreach (var w in Desktop.Windows) w.RefreshDynamicPerf();
+        }), "动态壁纸下图标层改走软件渲染，阴影是性能大头。推荐低配机保持开启；显卡强可关闭保留阴影"));
+        wall.Children.Add(Separator());
+        wall.Children.Add(Row("使用动态壁纸时禁用动画", Toggle(Config.DynamicNoAnimations, v =>
+        {
+            Config.DynamicNoAnimations = v;
+            Config.Save();
+        }), "展开叠放、整理等布局动画改为瞬移，低配机的帧率保底选项"));
+        wall.Children.Add(Separator());
         wall.Children.Add(Row("静态壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
             "在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）"));
         p.Children.Add(Card(wall));

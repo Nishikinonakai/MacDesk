@@ -55,6 +55,29 @@ internal static class WallpaperEngine
         return $"class={ClassNameOf(w)} proc={proc}";
     }
 
+    /// <summary>点击转发的真正收件人：Web（CEF）壁纸的鼠标消息由 Chromium 的
+    /// Chrome_RenderWidgetHostHWND 叶子窗处理（发给宿主窗石沉大海，真机实锤）；
+    /// 场景型无子窗结构，退回收编窗本体。</summary>
+    public static IntPtr FindInputSink(IntPtr adopted)
+    {
+        IntPtr leaf = FindDescendantByClass(adopted, "Chrome_RenderWidgetHostHWND", 3);
+        return leaf != IntPtr.Zero ? leaf : adopted;
+    }
+
+    private static IntPtr FindDescendantByClass(IntPtr parent, string cls, int depth)
+    {
+        if (depth <= 0) return IntPtr.Zero;
+        IntPtr c = GetWindow(parent, GW_CHILD);
+        while (c != IntPtr.Zero)
+        {
+            if (ClassNameOf(c) == cls) return c;
+            IntPtr deep = FindDescendantByClass(c, cls, depth - 1);
+            if (deep != IntPtr.Zero) return deep;
+            c = GetWindow(c, GW_HWNDNEXT);
+        }
+        return IntPtr.Zero;
+    }
+
     private static IEnumerable<IntPtr> EnumCandidates()
     {
         // Progman 下的所有 WorkerW（壁纸软件的惯用宿主层）

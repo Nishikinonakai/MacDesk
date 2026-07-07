@@ -1286,6 +1286,7 @@ public partial class MainWindow : Window
         // 落点吸附整数 DIU：亚像素坐标会让整个图标（尤其文字）渲染发糊
         l = Math.Round(l);
         t = Math.Round(t);
+        if (animated && AnimationsSuppressed(el)) animated = false;
         if (animated && !double.IsNaN(Canvas.GetLeft(el)))
         {
             var ax = new DoubleAnimation(l, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease };
@@ -1308,6 +1309,13 @@ public partial class MainWindow : Window
     /// 否则到位后突然消失很生硬；展开反向渐显）。delayMs 让渐隐集中在行程后段。</summary>
     private static void FadeTo(FrameworkElement el, double to, int ms, int delayMs = 0)
     {
+        if (AnimationsSuppressed(el))
+        {
+            el.BeginAnimation(OpacityProperty, null);
+            el.Opacity = to;
+            PokeWindowOf(el, 80);
+            return;
+        }
         var a = new DoubleAnimation(to, TimeSpan.FromMilliseconds(ms))
         {
             BeginTime = TimeSpan.FromMilliseconds(delayMs),
@@ -1753,20 +1761,23 @@ public partial class MainWindow : Window
 
     private void OnCanvasMouseUp(object sender, MouseButtonEventArgs e)
     {
-        // 点击型交互壁纸试验（机主反馈驱动）：空白处原地点击（非框选拖拽）转发给收编的
-        // 壁纸窗——WE 收不到真实鼠标消息（我们的输入层在上面），Post 一对 down/up 过去，
-        // 壁纸不处理也无害。仅左键；框选/拖拽不转发。
+        // 点击型交互壁纸（机主反馈驱动）：空白处原地点击（非框选拖拽）转发给收编壁纸的
+        // 输入收件窗——Web（CEF）壁纸是 Chrome_RenderWidgetHostHWND 叶子（发宿主窗无效，
+        // 真机实锤），场景型退回本窗。先补一发 MOVE 让 Chromium 的命中状态就位，再 DOWN/UP。
+        // WE 原生路径靠自家鼠标钩子喂 click，我们的输入层挡在上面时钩子不喂，只能自己转发。
         if (_bandActive && _weWindow != IntPtr.Zero && Native.IsWindow(_weWindow))
         {
             var p = e.GetPosition(IconCanvas);
             if (Math.Abs(p.X - _bandOrigin.X) < 4 && Math.Abs(p.Y - _bandOrigin.Y) < 4)
             {
+                IntPtr sink = WallpaperEngine.FindInputSink(_weWindow);
                 var screen = RootGrid.PointToScreen(e.GetPosition(RootGrid)); // 物理 px
-                int cx = (int)screen.X - Monitor.Physical.Left;
-                int cy = (int)screen.Y - Monitor.Physical.Top;
-                IntPtr lp = (IntPtr)((cy << 16) | (cx & 0xFFFF));
-                Native.PostMessage(_weWindow, 0x0201 /*WM_LBUTTONDOWN*/, (IntPtr)0x0001 /*MK_LBUTTON*/, lp);
-                Native.PostMessage(_weWindow, 0x0202 /*WM_LBUTTONUP*/, IntPtr.Zero, lp);
+                var pt = new Native.POINT { X = (int)screen.X, Y = (int)screen.Y };
+                Native.ScreenToClient(sink, ref pt);
+                IntPtr lp = (IntPtr)((pt.Y << 16) | (pt.X & 0xFFFF));
+                Native.PostMessage(sink, 0x0200 /*WM_MOUSEMOVE*/, IntPtr.Zero, lp);
+                Native.PostMessage(sink, 0x0201 /*WM_LBUTTONDOWN*/, (IntPtr)0x0001 /*MK_LBUTTON*/, lp);
+                Native.PostMessage(sink, 0x0202 /*WM_LBUTTONUP*/, IntPtr.Zero, lp);
             }
         }
         EndBand();
@@ -2658,8 +2669,21 @@ public partial class MainWindow : Window
 
     private void ApplyCacheMode(FrameworkElement el)
     {
-        if (_presenter != null) StripEffects(el);
+        if (_presenter != null && Config.DynamicNoShadows) StripEffects(el);
         else RestoreEffects(el);
+    }
+
+    /// <summary>动态壁纸 + 机主勾了"禁用动画" = 布局动画全部瞬移（低配帧率保底）。</summary>
+    private static bool AnimationsSuppressed(FrameworkElement el) =>
+        Config.DynamicNoAnimations && Window.GetWindow(el) is MainWindow { _presenter: not null };
+
+    /// <summary>设置里切换性能项（禁用阴影）后 live 重应用。</summary>
+    internal void RefreshDynamicPerf()
+    {
+        if (_presenter == null) return;
+        ApplyCacheModeAll();
+        RenderFrame();
+        PokeFrames(300);
     }
 
     private void StripEffects(DependencyObject node)
