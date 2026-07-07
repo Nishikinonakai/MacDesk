@@ -287,8 +287,9 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
-        _presenter?.Dispose(); // 呈现层跟窗口同生共死（交接/退出时别留残影）
-        _presenter = null;
+        // 呈现层跟窗口同生共死；WE 窗用户退出时还原回 WorkerW（桌面回原生态也有壁纸），
+        // 交接退场时留在 DefView 给替身实例无缝再收编
+        ExitDynamic(release: !HandoffRetiring);
         if (IsPrimary)
         {
             SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
@@ -313,6 +314,7 @@ public partial class MainWindow : Window
     {
         if (!_attached || _handoffInProgress) return;
         _handoffInProgress = true;
+        HandoffRetiring = true; // 所有窗口退场时保留 WE 收编现场给替身
         // 重挂子窗口的活体改尺寸在 WPF/DPI 虚拟化下不可靠（多次实测：MoveWindow 后布局尺寸卡旧值）。
         Log.Write("display change -> spawning handoff replacement");
         Services.Watchdog.EnsureRunning(App.LaunchModeArgs); // 兜底：超时路径仍靠它接管
@@ -404,7 +406,7 @@ public partial class MainWindow : Window
             Height = Monitor.Physical.Height * ct.TransformFromDevice.M22;
             Log.Write($"[{MonKey}] covered; wpf scale={believed:F2} actual={actual:F2} correction={k:F3} wpf-size={Width:F0}x{Height:F0}");
         }
-        ApplyTrueTransparency(); // 透传态进入/矩形同步（默认关 = no-op）
+        ApplyWallpaperMode(); // 动态壁纸模式进入/矩形同步（WE 不在 = no-op 保持镜像）
     }
 
     // WPF 的尺寸账本（DIU）和窗口 DPI 在混合缩放下会打架，它总想按自己的理解改窗口大小。
@@ -464,24 +466,8 @@ public partial class MainWindow : Window
                 System.Runtime.InteropServices.Marshal.StructureToPtr(wp, lParam, false);
             }
         }
-        // 透传态：WPF 在 AllowsTransparency=false 下会主动从 exstyle 清掉 WS_EX_LAYERED
-        //（渲染管线不需要它）→ 我们靠 layered 让输入层近隐形的招就失效。拦 WM_STYLECHANGING
-        // 在 WPF 提议的新 exstyle 里把 layered 位强行加回（WM_STYLECHANGING 允许修改 styleNew，
-        // 系统用修改后的值应用）——根治，无闪烁。
-        if (msg == 0x007C /* WM_STYLECHANGING */ && _presenter != null && wParam == (IntPtr)Native.GWL_EXSTYLE)
-        {
-            var ss = System.Runtime.InteropServices.Marshal.PtrToStructure<STYLESTRUCT>(lParam);
-            if ((ss.styleNew & Native.WS_EX_LAYERED) == 0)
-            {
-                ss.styleNew |= Native.WS_EX_LAYERED;
-                System.Runtime.InteropServices.Marshal.StructureToPtr(ss, lParam, false);
-            }
-        }
         return IntPtr.Zero;
     }
-
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct STYLESTRUCT { public int styleOld, styleNew; }
 
     // ── 图标集合 ──────────────────────────────────────────────
 
@@ -1303,6 +1289,7 @@ public partial class MainWindow : Window
             var ay = new DoubleAnimation(t, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease };
             el.BeginAnimation(Canvas.LeftProperty, ax);
             el.BeginAnimation(Canvas.TopProperty, ay);
+            PokeWindowOf(el, ms + 150); // 位移动画全程催帧（LayoutUpdated 只负责唤醒不负责续命）
         }
         else
         {
@@ -1310,6 +1297,7 @@ public partial class MainWindow : Window
             el.BeginAnimation(Canvas.TopProperty, null);
             Canvas.SetLeft(el, l);
             Canvas.SetTop(el, t);
+            PokeWindowOf(el, 80);
         }
     }
 
@@ -1549,6 +1537,7 @@ public partial class MainWindow : Window
         ax.Completed += (_, _) => Land();
         ghost.BeginAnimation(Canvas.LeftProperty, ax);
         ghost.BeginAnimation(Canvas.TopProperty, ay);
+        PokeFrames(400); // 回弹全程催帧
     }
 
     /// <summary>拖拽图像：组图标按当前相对位置合成；包围盒过大退化为锚点图标+计数角标。物理像素。</summary>
@@ -1748,6 +1737,7 @@ public partial class MainWindow : Window
         Canvas.SetTop(_bandRect, rect.Y);
         _bandRect.Width = rect.Width;
         _bandRect.Height = rect.Height;
+        PokeFrames(150); // 拖动期间持续续命（LayoutUpdated 只唤醒不续命）
 
         foreach (var iv in VisibleIcons)
         {
@@ -2610,13 +2600,22 @@ public partial class MainWindow : Window
         return crop;
     }
 
-    // ── 真透明（壁纸透传，"三明治"架构）────────────────────────
-    // 输入层 = 本 WPF 窗原样（WS_EX_LAYERED + 常量 alpha 1/255：整矩形照收输入、近隐形，
-    // 交互代码零改动）；呈现层 = 其下的 UlwPresenter（输入穿透），帧 = RootGrid 离屏
-    // RenderTargetBitmap → premult BGRA → ULW。脏驱动：静止零推送，LayoutUpdated 催帧
-    // 覆盖一切布局型变化，渲染专用变化（笔刷/透明度/换图）各埋点 Poke，2s 心跳兜底。
+    // ── 动态壁纸（Wallpaper Engine 收编，"三明治 v3"）──────────
+    // 真透明透传已证伪（WPF child 无法 layered，见 dev-notes"下午 VI"）；本模式不需要
+    // WPF 窗隐身：把 WE 的每屏渲染窗从 WorkerW 收编进 DefView，z 序三层——
+    //   UlwPresenter（图标帧，输入穿透）→ WE 渲染窗（壁纸，输入穿透）→ WPF 窗（收全部输入）。
+    // WPF 窗被 WE 窗视觉盖住（≠隐身，绕开 layered 死穴），它的画面由 presenter 以
+    // RootGrid RenderTargetBitmap → premult BGRA → ULW 呈现。脏驱动：静止零推送，
+    // LayoutUpdated 催帧覆盖布局型变化，渲染专用变化各埋点 Poke，2s 心跳兜底 + WE 健康检查。
+
+    /// <summary>交接退场标志：老进程 Close 时不把 WE 窗还原回 WorkerW（留在 DefView，
+    /// 替身实例直接再收编，避免空窗期）。</summary>
+    internal static bool HandoffRetiring;
 
     private UlwPresenter? _presenter;
+    private IntPtr _weWindow;              // 收编的 WE 渲染窗（Zero = 非动态模式）
+    private IntPtr _weOriginalParent;
+    private int _weOriginalEx;
     private RenderTargetBitmap? _frameBitmap;
     private bool _pumpOn;
     private DateTime _pumpUntil;
@@ -2624,118 +2623,123 @@ public partial class MainWindow : Window
     private double _frameCostMs = 5; // EMA；自适应节流，4K 下渲染贵就自动降帧率
     private DispatcherTimer? _frameHeartbeat;
     private DispatcherTimer? _renameCaretPump;
-    private DispatcherTimer? _styleGuard;
-    private bool _inputLayerLogged;
 
-    /// <summary>把输入层降为近隐形 layered 窗口（整矩形收输入、alpha=1 视觉不可见）。
-    /// WM_STYLECHANGING 拦截保 layered 位不被 WPF 清，这里负责 LWA_ALPHA 值 + 首次诊断日志。</summary>
-    private void ApplyInputLayerStyle()
+    /// <summary>按"设置开关 + WE 是否在本屏渲染"进入/退出动态壁纸模式。
+    /// 调用点：挂载后（CoverAndSync）、设置切换、Desktop 8s 轮询（WE 启动检测）、心跳（WE 健康）。</summary>
+    internal void ApplyWallpaperMode()
     {
-        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
-        if ((ex & Native.WS_EX_LAYERED) == 0)
-        {
-            Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, ex | Native.WS_EX_LAYERED);
-            ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
-        }
-        Native.SetLayeredWindowAttributes(_hwnd, 0, 1, Native.LWA_ALPHA);
-        if (!_inputLayerLogged)
-        {
-            _inputLayerLogged = true;
-            Log.Write($"[{MonKey}] input layer style: ex=0x{ex:X} layered={(ex & Native.WS_EX_LAYERED) != 0}");
-        }
+        if (!_attached || !_forceRectValid) return;
+        IntPtr we = Config.DynamicWallpaper ? WallpaperEngine.FindForMonitor(Monitor.Physical) : IntPtr.Zero;
+        if (we != IntPtr.Zero) EnterDynamic(we);
+        else ExitDynamic(release: true);
     }
 
-    /// <summary>按 Config.TrueTransparency 进入/退出/同步透传态（挂载后、设置切换、CoverAndSync 复查时调）。</summary>
-    internal void ApplyTrueTransparency()
+    private void EnterDynamic(IntPtr we)
     {
-        if (!_attached) return;
-        if (Config.TrueTransparency && _presenter == null) EnablePassthrough();
-        else if (!Config.TrueTransparency && _presenter != null) DisablePassthrough();
-        else if (_presenter != null)
+        if (_weWindow == we && _presenter != null)
         {
-            _presenter.Sync(_hwnd, _forceRect);
-            RenderFrame();
-        }
-    }
-
-    private void EnablePassthrough()
-    {
-        var p = UlwPresenter.Create(DesktopLayer.ParentHwnd, _hwnd, _forceRect);
-        if (p == null)
-        {
-            Log.Write($"[{MonKey}] passthrough presenter FAILED; staying opaque");
+            AssertDynamicZOrder(); // 已在动态模式：只复核 z 序与矩形
             return;
         }
-        _presenter = p; // STYLECHANGING 拦截需要它先非空
-
-        // ⚠️ 已知硬障碍（2026-07-07 真机定案）：三明治的输入层隐身依赖 WPF 窗口能成为
-        // layered 窗口（LWA_ALPHA(1) 整矩形收输入 + 视觉近隐形）。但 WPF 用 D3D 重定向
-        // 渲染，child 窗口无法 layered——SetWindowLong 加 WS_EX_LAYERED 被系统拒（同进程
-        // 实测读回仍非 layered，WM_STYLECHANGING 拦截也保不住）。不 layered 的输入层会
-        // 不透明遮挡下层，反而全黑。故：试着施加，读回验证；没成就自动退回镜像态，绝不黑屏。
-        // 动态壁纸的正解改走 Windows.Graphics.Capture 镜像（backlog），不是这条透传路。
-        _inputLayerLogged = false;
-        ApplyInputLayerStyle();
-        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
-        if ((ex & Native.WS_EX_LAYERED) == 0)
+        if (_weWindow != IntPtr.Zero && _weWindow != we)
         {
-            Log.Write($"[{MonKey}] passthrough UNAVAILABLE: WPF input layer can't be layered (ex=0x{ex:X}); reverting to mirror");
-            _presenter.Dispose();
-            _presenter = null;
+            // WE 换壁纸重建了渲染窗：释放旧的（多半已死，Release 内部有 IsWindow 保护）
+            WallpaperEngine.Release(_weWindow, _weOriginalParent, _weOriginalEx);
+            _weWindow = IntPtr.Zero;
+        }
+
+        bool fresh = _presenter == null;
+        if (fresh)
+        {
+            var p = UlwPresenter.Create(DesktopLayer.ParentHwnd, Native.HWND_TOP, _forceRect);
+            if (p == null)
+            {
+                Log.Write($"[{MonKey}] dynamic wallpaper presenter FAILED; staying on mirror");
+                return;
+            }
+            _presenter = p;
+        }
+
+        (_weOriginalParent, _weOriginalEx) = WallpaperEngine.Adopt(we, _forceRect);
+        _weWindow = we;
+        AssertDynamicZOrder();
+
+        if (fresh)
+        {
+            // 停镜像：presenter 帧空白区 alpha=0，透出中层的 WE 窗
+            RemoveWallpaperImage();
             _wallpaperSig = "";
-            ApplyDesktopBackground(); // 回镜像
-            return;
+            RootGrid.Background = Brushes.Transparent;
+
+            if (DesktopLayer.NativeIconsVisible)
+            {
+                DesktopLayer.SetNativeIconsVisible(false); // 原生图标会透出来变双份
+                Log.Write($"[{MonKey}] hid native icons for dynamic wallpaper");
+            }
+
+            RootGrid.LayoutUpdated += OnLayoutUpdatedPoke;
+            int beat = 0;
+            _frameHeartbeat = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            _frameHeartbeat.Tick += (_, _) =>
+            {
+                if (_weWindow != IntPtr.Zero && !Native.IsWindow(_weWindow))
+                {
+                    // WE 退出/重建了渲染窗 → 重新探测（找到新窗就换乘，找不到回镜像）
+                    _weWindow = IntPtr.Zero;
+                    ApplyWallpaperMode();
+                    return;
+                }
+                AssertDynamicZOrder(); // 廉价 Win32 调用，每拍都做
+                // 兜底帧（漏埋点的渲染型变化）：全帧 RTB 在 4K 上一帧 ~0.2s CPU（软件光栅化
+                // 全树 DropShadow，真机实测），交互路径有埋点+LayoutUpdated 唤醒兜着——
+                // 只在长静止（30s 无任何推帧）时补一帧，静止 CPU 压到 ~0%
+                if (++beat % 15 == 0 && (DateTime.UtcNow - _lastFramePush).TotalSeconds > 15)
+                {
+                    _lastFramePush = DateTime.UtcNow;
+                    RenderFrame();
+                }
+            };
+            _frameHeartbeat.Start();
         }
-
-        // （下面这段只有当环境允许 WPF layered 时才走到——当前所有实测环境都在上面回退了。
-        //  保留以备 WGC 或未来环境让 layered 生效时复用。）
-        _styleGuard = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _styleGuard.Tick += (_, _) => ApplyInputLayerStyle();
-        _styleGuard.Start();
-
-        RemoveWallpaperImage();
-        _wallpaperSig = "";
-        RootGrid.Background = Brushes.Transparent;
-
-        if (DesktopLayer.NativeIconsVisible)
-        {
-            DesktopLayer.SetNativeIconsVisible(false);
-            Log.Write($"[{MonKey}] hid native icons for passthrough");
-        }
-
-        RootGrid.LayoutUpdated += OnLayoutUpdatedPoke;
-        _frameHeartbeat = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _frameHeartbeat.Tick += (_, _) => RenderFrame();
-        _frameHeartbeat.Start();
 
         RenderFrame();
         PokeFrames(600);
-        Log.Write($"[{MonKey}] true transparency ON presenter={p.Hwnd} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
+        Log.Write($"[{MonKey}] dynamic wallpaper ON we=0x{we:X} presenter=0x{_presenter!.Hwnd:X} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
     }
 
-    private void DisablePassthrough()
+    /// <summary>三层 z 序（presenter 顶、WE 中、WPF 底）+ 矩形复核。收编别家窗口，
+    /// 谁都可能动它，心跳廉价重申一次。</summary>
+    private void AssertDynamicZOrder()
     {
+        if (_presenter == null || _weWindow == IntPtr.Zero) return;
+        _presenter.Sync(Native.HWND_TOP, _forceRect);
+        Native.SetWindowPos(_weWindow, _presenter.Hwnd, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+        Native.SetWindowPos(_hwnd, _weWindow, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
+    }
+
+    private void ExitDynamic(bool release)
+    {
+        if (_presenter == null && _weWindow == IntPtr.Zero) return;
         RootGrid.LayoutUpdated -= OnLayoutUpdatedPoke;
         _frameHeartbeat?.Stop();
         _frameHeartbeat = null;
-        _styleGuard?.Stop();
-        _styleGuard = null;
         StopRenameCaretPump();
         if (_pumpOn) { CompositionTarget.Rendering -= OnPumpFrame; _pumpOn = false; }
         _presenter?.Dispose();
         _presenter = null;
         _frameBitmap = null;
 
-        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
-        Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, ex & ~Native.WS_EX_LAYERED);
-        // 去掉 layered 位后促使 WPF 恢复正常上屏
-        Native.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0,
-            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_FRAMECHANGED);
-        InvalidateVisual();
+        if (_weWindow != IntPtr.Zero)
+        {
+            if (release) WallpaperEngine.Release(_weWindow, _weOriginalParent, _weOriginalEx);
+            _weWindow = IntPtr.Zero;
+        }
 
         _wallpaperSig = "";
         ApplyDesktopBackground(); // 回镜像路径（含 RootGrid 底色恢复）
-        Log.Write($"[{MonKey}] true transparency OFF");
+        Log.Write($"[{MonKey}] dynamic wallpaper OFF (release={release})");
     }
 
     /// <summary>渲染一帧到呈现层。VisualBrush + Stretch.Fill 把 RootGrid（含 LayoutTransform
@@ -2772,7 +2776,14 @@ public partial class MainWindow : Window
         CompositionTarget.Rendering += OnPumpFrame;
     }
 
-    private void OnLayoutUpdatedPoke(object? s, EventArgs e) => PokeFrames();
+    /// <summary>LayoutUpdated 只当"从静止唤醒"的传感器：泵活跃期间它每帧都 fire（WPF 在
+    /// Rendering 订阅期间每帧跑布局检查，与真实变化无关）——无脑 poke 会自激成永动机
+    ///（真机实锤：静止 CPU 挂在 3%+）。泵停后 WPF 停渲染，此事件只在真变化时来。
+    /// 动画的持续续命由 MoveElement/FadeTo 等显式埋点负责。</summary>
+    private void OnLayoutUpdatedPoke(object? s, EventArgs e)
+    {
+        if (!_pumpOn) PokeFrames(250);
+    }
 
     private void OnPumpFrame(object? s, EventArgs e)
     {

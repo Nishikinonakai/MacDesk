@@ -490,7 +490,14 @@ internal sealed class SettingsWindow : Window
         p.Children.Add(Card(sec));
 
         var wall = new StackPanel();
-        wall.Children.Add(Row("壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
+        wall.Children.Add(Row("动态壁纸（Wallpaper Engine）", Toggle(Config.DynamicWallpaper, v =>
+        {
+            Config.DynamicWallpaper = v;
+            Config.Save();
+            foreach (var w in Desktop.Windows) w.ApplyWallpaperMode();
+        }), "检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。"));
+        wall.Children.Add(Separator());
+        wall.Children.Add(Row("静态壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
             "在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）"));
         p.Children.Add(Card(wall));
 
@@ -723,7 +730,7 @@ internal sealed class SettingsWindow : Window
                 w.WriteLine($".NET: {Environment.Version}");
                 w.WriteLine($"Launch args: {string.Join(" ", App.LaunchModeArgs)}");
                 w.WriteLine($"Settings: free={Config.FreePlacement} stacks={Config.UseStacks}/{Config.StackGroupBy} " +
-                            $"menuMain={Config.MenuInMainProcess} trueTransparency={Config.TrueTransparency} fastAutostart={Config.FastAutostart}");
+                            $"menuMain={Config.MenuInMainProcess} dynamicWallpaper={Config.DynamicWallpaper} fastAutostart={Config.FastAutostart}");
                 foreach (var m in Desktop.Monitors)
                     w.WriteLine($"Monitor: {m.Key}{(m.IsPrimary ? " (primary)" : "")} " +
                                 $"({m.Physical.Left},{m.Physical.Top}) {m.Physical.Width}x{m.Physical.Height} dpi={m.Dpi}");

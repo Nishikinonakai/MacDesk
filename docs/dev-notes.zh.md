@@ -134,10 +134,49 @@ SaveFileDialog = Microsoft.Win32.SaveFileDialog` 消歧义。
   个人痕迹、发送前可自查删改。回应机主"要不要加带 log 反馈"的想法——做成手动导出而非常驻
   记录，隐私风险最低（默认不额外收集，日志本就在本机为调试写着）。
 
-## Backlog（2026-07-07 下午 VI 刷新）
+## 2026-07-07 傍晚：动态壁纸兼容交付——"收编"模式（三明治 v3，全矩阵真机验证）
+
+机主拍板动态壁纸优先。没走 WGC 捕获（下午 VI 的预案），真机 spike 发现**更轻的正解**：
+WE 的每屏渲染窗 `WPEDesktopDX11Window` 本来就按显示器分好尺寸住在 Progman 的 WorkerW 里，
+直接**跨进程 SetParent 收编进 DefView**，z 序三层三明治：
+
+```
+SHELLDLL_DefView
+ ├─ UlwPresenter        ← 图标帧（RootGrid RTB→ULW），WS_EX_TRANSPARENT 输入穿透
+ ├─ WPEDesktopDX11Window ← WE 原生渲染（收编，加 WS_EX_TRANSPARENT），零拷贝零开销
+ └─ WPF MainWindow      ← 被上面视觉盖住（≠隐身，绕开 layered 死穴），收 100% 输入
+```
+
+**Spike 三命题（纯 PowerShell + 调试代理，未写码先验证）**：①跨进程 SetParent 进 DefView
+后 WE 照常渲染（两帧 diff 108 万像素）；②加 WS_EX_TRANSPARENT 后右键隔窗穿透到 WPF（菜单
+正常弹出）；③还原 SetParent 回 WorkerW 无副作用。
+
+**实现**（`Services/WallpaperEngine.cs` + MainWindow 动态模式，替换掉透传实验代码）：
+- 发现：搜 Progman 全部 WorkerW + DefView（继任实例接手崩溃遗留）的 WPEDesktopDX11Window，
+  按屏幕矩形匹配显示器（±2px 宽松）。
+- 生命周期：8s 轮询检测 WE 启动（复用壁纸轮询）；2s 心跳做 WE 窗健康检查 + z 序重申；
+  WE 退出→自动回退静态镜像；WE 换壁纸重建窗→换乘收编。`--quit` 还原（exstyle+父窗口回
+  WorkerW，真机 2/2 验证）；交接退场不还原（`HandoffRetiring`，替身在 DefView 再收编）；
+  崩溃→看门狗替身 2s 内从 DefView 再收编（真机杀主进程验证，hwnd 逐一吻合）。
+- 设置：外观页"动态壁纸（Wallpaper Engine）"开关，默认开（WE 不在=无副作用）。
+- **交互壁纸白拿**：WE 鼠标交互走全局光标轮询，收编后视差/镜头跟随照常工作（真机 Fantastic
+  Car 镜头跟注入光标实锤）——腾讯桌面整理不支持的点我们架构天然支持。点击型交互事件未验证
+  （需要 Solid 物件的壁纸），backlog 可试 PostMessage 转发空白区点击。
+- **帧泵自激永动机（大坑）**：CompositionTarget.Rendering 订阅期间 WPF **每帧**触发
+  LayoutUpdated（与真实布局变化无关）→ LayoutUpdated 无脑 poke 会让泵永不退订（静止 CPU
+  挂 3%+ 真机实锤）。修 = LayoutUpdated 只当"从静止唤醒"传感器（`if(!_pumpOn) Poke(250)`），
+  动画续命全靠显式埋点（MoveElement/FadeTo/框选 move/回弹）。
+- **兜底帧成本**：4K 全树 RTB 一帧 ~0.2s CPU（软件光栅化 DropShadow 是大头）→ 兜底帧只在
+  30s 无任何推帧时补一发。**静止 CPU 终值 0.1%**（逐进程归因测量）。
+- 验证矩阵：双屏收编/动画持续/点选（accent 像素采样）/右键菜单/框选/拖拽（Stacks 语义排回
+  正常）/WE 退出回退/WE 重启再收编/quit 还原/崩溃自愈/静止 CPU。**分辨率交接未实测**（逻辑
+  自洽+看门狗兜底，待机主日常观察）。
+
+## Backlog（2026-07-07 傍晚刷新）
 
 - Stacks v2 剩余：拖文件进堆（手动归类）、多屏叠放策略复核（待机主双屏实用反馈，现状=每窗口对自己图标聚堆；机主拖 Jellyfin 去 TV 就是在试这个）。
-- **动态壁纸 = WGC 镜像（头号大件，见上"下午 VI"节）**：三明治透传证伪，改用 Windows.Graphics.Capture 实时抓 WE 画面画进 WPF 背景。DefView 透传 WE 已证（备用知识），presenter/ULW 代码保留。
+- 动态壁纸后续：点击型交互壁纸事件转发试验（PostMessage 空白区点击给 WE 窗）；分辨率交接下的收编交接实测；WE 以外的动态壁纸软件（Lively 等）按同款收编模式适配（窗口类名不同而已）。
+- WGC 捕获镜像方案存档不用（收编模式全面优于它：零拷贝、零 CPU、原生帧率；WGC 仅当未来遇到不能收编的壁纸软件再启用）。
 - 远期：拖拽图像掠过高 DPI 屏偏小（shell 限制）。
 
 ## 测试（远程，home-win）

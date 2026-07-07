@@ -99,7 +99,14 @@ internal static class Desktop
                 });
         };
         var wpPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
-        wpPoll.Tick += (_, _) => { foreach (var w in Windows) w.ApplyDesktopBackground(); };
+        wpPoll.Tick += (_, _) =>
+        {
+            foreach (var w in Windows)
+            {
+                w.ApplyDesktopBackground();
+                w.ApplyWallpaperMode(); // WE 启动/退出检测（动态模式内的健康检查走各窗心跳）
+            }
+        };
         wpPoll.Start();
 
         // 强调色切换 → 全窗口刷新选中态视觉
