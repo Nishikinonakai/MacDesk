@@ -159,6 +159,17 @@ internal static class Native
     public const uint PM_REMOVE = 0x0001;
 
     [DllImport("user32.dll")]
+    public static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr DispatchMessageW(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    public static extern uint MsgWaitForMultipleObjects(uint nCount, IntPtr[] pHandles, bool fWaitAll, uint dwMilliseconds, uint dwWakeMask);
+
+    public const uint QS_ALLINPUT = 0x04FF;
+
+    [DllImport("user32.dll")]
     public static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
     public const uint MONITOR_DEFAULTTOPRIMARY = 1;

@@ -930,17 +930,75 @@ public partial class MainWindow : Window
                 (double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root)) - ax,
                 (double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root)) - ay),
                 StringComparer.OrdinalIgnoreCase));
+        // 组包围盒左上角（回弹动画的归位点；拖拽图像的原点与此对应）
+        double homeX = group.Min(g => double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root));
+        double homeY = group.Min(g => double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root));
+
         foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); } // 原位留影
-        try { ShellDrag.Start(filePaths, allPaths, image, hotspot); }
+        DragDropEffects? result = null;
+        try { result = ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
         finally
         {
             ActiveDrag = null;
-            foreach (var g in group) g.Root.Opacity = 1;
-            _dragGhosts.Clear();
             iv.Dragging = false;
         }
+        if (result == null)
+        {
+            // 取消（Esc/右键/无效落点）：拖拽图像从取消点飞回原位（Finder 手感），
+            // 动画落地才恢复原图标透明度（期间 _dragGhosts 豁免自愈）
+            SpringBack(group, image, hotspot, new Point(homeX, homeY));
+        }
+        else
+        {
+            foreach (var g in group) g.Root.Opacity = 1;
+            _dragGhosts.Clear();
+        }
         // 后续：拖回自己/兄弟窗口 → OnDesktopDrop 重定位；Move 去外部 → FileSystemWatcher 移除图标
+    }
+
+    /// <summary>拖拽取消回弹：用拖拽位图做幽灵，从当前光标位置飞回组原位。</summary>
+    private void SpringBack(List<IconVisual> group, BitmapSource imagePx, Native.POINT hotspotPx, Point homeTL)
+    {
+        double dev = PresentationSource.FromVisual(this)?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+        double k = (RootGrid.LayoutTransform as ScaleTransform)?.ScaleX ?? 1.0;
+        double scale = dev * k;
+
+        Point cur = homeTL;
+        try
+        {
+            Native.GetCursorPos(out var cp);
+            var p = IconCanvas.PointFromScreen(new Point(cp.X, cp.Y));
+            cur = new Point(p.X - hotspotPx.X / scale, p.Y - hotspotPx.Y / scale);
+        }
+        catch { }
+
+        var ghost = new Image
+        {
+            Source = imagePx,
+            Width = imagePx.PixelWidth / scale,
+            Height = imagePx.PixelHeight / scale,
+            IsHitTestVisible = false,
+            Opacity = 0.9,
+        };
+        System.Windows.Controls.Panel.SetZIndex(ghost, 2000);
+        IconCanvas.Children.Add(ghost);
+        Canvas.SetLeft(ghost, cur.X);
+        Canvas.SetTop(ghost, cur.Y);
+
+        void Land()
+        {
+            IconCanvas.Children.Remove(ghost);
+            foreach (var g in group) g.Root.Opacity = 1;
+            _dragGhosts.Clear();
+        }
+        var dur = TimeSpan.FromMilliseconds(220);
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var ax = new DoubleAnimation(cur.X, homeTL.X, dur) { EasingFunction = ease };
+        var ay = new DoubleAnimation(cur.Y, homeTL.Y, dur) { EasingFunction = ease };
+        ax.Completed += (_, _) => Land();
+        ghost.BeginAnimation(Canvas.LeftProperty, ax);
+        ghost.BeginAnimation(Canvas.TopProperty, ay);
     }
 
     /// <summary>拖拽图像：组图标按当前相对位置合成；包围盒过大退化为锚点图标+计数角标。物理像素。</summary>

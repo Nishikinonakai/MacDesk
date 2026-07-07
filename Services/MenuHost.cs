@@ -69,6 +69,56 @@ internal static class MenuHost
         return buf;
     }
 
+    // ── host STA 侧的泵等待 ──────────────────────────────────
+    // shell 的"属性"等异步动词把数据对象留在 host 的 STA 上、另开线程建属性页，
+    // 初始化时要编组回调到本 STA。host 闲时死等管道（不泵消息）会把这些回调卡住——
+    // 机主实测属性窗口要等好多秒才弹出。所有空闲等待改 MsgWaitForMultipleObjects+泵。
+
+    private static void PumpUntilSignaled(WaitHandle h)
+    {
+        var handles = new[] { h.SafeWaitHandle.DangerousGetHandle() };
+        while (true)
+        {
+            uint r = Native.MsgWaitForMultipleObjects(1, handles, false, 0xFFFFFFFF, Native.QS_ALLINPUT);
+            if (r == 1) // 有消息：泵掉再回去等
+            {
+                while (Native.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Native.PM_REMOVE))
+                {
+                    Native.TranslateMessage(ref m);
+                    Native.DispatchMessageW(ref m);
+                }
+                continue;
+            }
+            return; // 句柄有信号（r==0）或等待失败：交回调用方
+        }
+    }
+
+    private static byte[]? ReadFramePumping(Stream s)
+    {
+        var len = ReadExactPumping(s, 4);
+        if (len == null) return null;
+        int n = BinaryPrimitives.ReadInt32LittleEndian(len);
+        if (n is < 0 or > 64 * 1024 * 1024) return null;
+        return ReadExactPumping(s, n);
+    }
+
+    private static byte[]? ReadExactPumping(Stream s, int n)
+    {
+        var buf = new byte[n];
+        int off = 0;
+        while (off < n)
+        {
+            var t = s.ReadAsync(buf, off, n - off);
+            PumpUntilSignaled(((IAsyncResult)t).AsyncWaitHandle);
+            int r;
+            try { r = t.GetAwaiter().GetResult(); }
+            catch { return null; }
+            if (r <= 0) return null;
+            off += r;
+        }
+        return buf;
+    }
+
     // ── 客户端（主进程侧） ────────────────────────────────────
 
     private static Process? _host;
@@ -303,9 +353,12 @@ internal static class MenuHost
         {
             try
             {
-                using var server = new NamedPipeServerStream(PipeNameV2, PipeDirection.InOut, 1);
-                server.WaitForConnection();
-                var req = ReadFrame(server);
+                using var server = new NamedPipeServerStream(PipeNameV2, PipeDirection.InOut, 1,
+                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                var ar = server.BeginWaitForConnection(null, null);
+                PumpUntilSignaled(ar.AsyncWaitHandle); // 等连接期间泵消息（属性页等异步动词的编组回调靠它放行）
+                server.EndWaitForConnection(ar);
+                var req = ReadFramePumping(server);
                 if (req == null) continue;
                 var parts = Encoding.UTF8.GetString(req).Split(US);
                 if (parts.Length < 5) continue;
@@ -333,8 +386,9 @@ internal static class MenuHost
                 WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items }));
                 Log.Write($"menu host v2: captured {items.Count} top-level items in {sw.ElapsedMilliseconds}ms");
 
-                // 菜单在主进程开着期间保持 IContextMenu 存活；用户关菜单后收命令帧
-                var cmdBytes = ReadFrame(server);
+                // 菜单在主进程开着期间保持 IContextMenu 存活；用户关菜单后收命令帧。
+                // 泵等待：上一个属性页/异步动词的编组回调不因本次等待而停摆
+                var cmdBytes = ReadFramePumping(server);
                 int cmd = cmdBytes is { Length: 4 } ? BinaryPrimitives.ReadInt32LittleEndian(cmdBytes) : 0;
                 if (cmd is > 0 and <= 0x6FFF)
                 {

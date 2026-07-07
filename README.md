@@ -3,10 +3,11 @@
 A macOS-style desktop layer for Windows. MacDesk draws its own icon grid on a
 full-screen layer that sits **above the wallpaper and below every application
 window** (the same z-order as Wallpaper Engine), and stores every icon position
-as a **normalized coordinate (0–1)**. When the resolution, DPI, or display
-configuration changes, icons keep their relative layout and re-flow smoothly —
-the way they do on macOS, instead of collapsing into the top-left corner the way
-the native Windows desktop does.
+as a **resolution-independent anchor distance** (top-right / near-edge anchored,
+the macOS model). When the resolution, DPI, or display configuration changes,
+icons keep their relative layout and re-flow smoothly — the way they do on
+macOS, instead of collapsing into the top-left corner the way the native
+Windows desktop does.
 
 > Status: works on Windows 11 (tested on 24H2 / build 26200), including
 > multi-monitor with mixed DPI (verified on 100% + 225%). The project began as a
@@ -28,6 +29,19 @@ the native Windows desktop does.
   background — "New", "Paste", third-party shell extensions), inline rename,
   delete to Recycle Bin, marquee + Ctrl multi-select, group drag with grid snap
   and collision avoidance, and OLE drag-and-drop in/out of other windows.
+  Cancelled drags spring back to their origin, Finder-style.
+- **Rock-solid native context menus.** Shell menus are built in an isolated
+  helper process (a crashing third-party extension can't take the desktop
+  down), then serialized and shown **on the main UI thread** — immune to the
+  async foreground battles that make popup menus vanish for other desktop
+  overlays. Menus follow the system dark mode, support full keyboard
+  navigation, and a settings GUI lets you blacklist unwanted entries.
+  If [Locale Emulator](https://github.com/xupefei/Locale-Emulator) is
+  installed, a "Run with Locale Emulator" item is added for executables
+  (LE's own handler is a .NET Framework COM extension that cannot be loaded
+  in-process).
+- **Finder-style labels** — long names truncate in the middle, keeping the
+  extension visible.
 - **Keyboard & selection parity** — see the table below.
 - **Clipboard file operations** — Ctrl+C / Ctrl+X / Ctrl+V via the shell
   clipboard (`CF_HDROP` + *Preferred DropEffect*); cut items dim until pasted.
@@ -47,6 +61,9 @@ the native Windows desktop does.
   dies, and re-attaches to the fresh shell. Resolution changes recover the same
   way.
 - **Start on boot** — a checkbox in the background menu (or `--enable-autostart`).
+- **Settings window** ("MacDesk 设置…" in the background menu) — free placement,
+  autostart, menu mode, and the context-menu blacklist, all editable in a GUI
+  (stored in `%LOCALAPPDATA%\MacDesk\settings.json`).
 - **High-DPI aware** — correct rendering at 100 %–225 % and mixed-DPI transitions.
 
 ## Keyboard shortcuts

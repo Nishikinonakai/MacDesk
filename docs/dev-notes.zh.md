@@ -358,3 +358,20 @@ SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可
   别 Wait）；传复制出来的 exe 副本会被 LE 拒绝（早先假阴性的原因）。** Feishu.lnk 右键真机
   见到该项 + 完整原生菜单 + 深色主题。
 - 文件菜单项数：42 shell → +分隔线+LE 项 = 44；背景菜单 16 → +设置项 = 17（日志实录）。
+
+## 2026-07-07 午：属性窗口秒开修复（host STA 泵）+ 拖拽取消回弹（真机验证）
+
+- **"属性要等好多秒"（机主反馈）真凶 = host STA 停摆**：shell 的"属性"等异步动词把
+  数据对象留在 host 的 STA 上、另开线程建属性页，初始化时的编组回调要回本 STA 派发；
+  而 host 闲时死等管道（WaitForConnection/Read 均不泵消息）→ 回调无限卡住。**真机实锤：
+  InvokeCommand 日志瞬间返回，但属性窗口 15 秒不出现**（机主看到的"几秒后弹出"其实是
+  下一次操作唤醒了 host）。修 = host 所有空闲等待改 MsgWaitForMultipleObjects+消息泵
+  （PumpUntilSignaled：等连接用 BeginWaitForConnection+泵、读帧用 ReadAsync+泵）。
+  **修后实测：点击属性 259ms 可见**（旧：∞）。同理惠及一切把回调留在 host STA 的
+  异步动词（打开方式、压缩等）。注意管道要开 PipeOptions.Asynchronous。
+- **拖拽取消回弹动画**（Finder 手感调研项）：ShellDrag.Start 改返回 `DragDropEffects?`
+  （null = DRAGDROP_S_CANCEL/失败），取消分支用拖拽位图做幽灵 Image，从取消点光标位置
+  220ms CubicEase-out 飞回组包围盒原位，落地才恢复原图标透明度（期间 _dragGhosts 豁免
+  自愈）。真机：拖出 550px 后 Esc，图标精确回原位、全不透明、无残影、无漂移。
+- README 同步：v3 锚距模型描述（旧文还写着 0–1 归一化坐标）、菜单序列化架构、设置
+  GUI、深色菜单、LE 项、标签中间省略、回弹动画。

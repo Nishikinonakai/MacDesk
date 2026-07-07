@@ -178,7 +178,7 @@ internal static class ShellDrag
     /// filePaths 进 CF_HDROP（外部目标用）；allPaths 进自家标记格式（本桌面重定位用，可含虚拟项）。
     /// 返回目标接受的效果（None = 取消）。
     /// </summary>
-    public static DragDropEffects Start(string[] filePaths, string[] allPaths, BitmapSource imagePx, Native.POINT hotspotPx)
+    public static DragDropEffects? Start(string[] filePaths, string[] allPaths, BitmapSource imagePx, Native.POINT hotspotPx)
     {
         var data = CreateFileDataObject(filePaths, allPaths);
         try
@@ -203,7 +203,8 @@ internal static class ShellDrag
 
         int hr = DoDragDrop(data, new DropSource(),
             (uint)(DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link), out uint effect);
-        return hr == DRAGDROP_S_DROP ? (DragDropEffects)effect : DragDropEffects.None;
+        // null = 取消（Esc/右键/无效落点），调用方据此做回弹动画；有值 = 真落下
+        return hr == DRAGDROP_S_DROP ? (DragDropEffects)effect : null;
     }
 
     /// <summary>接收端的拖拽图像助手（每窗口一个实例，DragEnter/Over/Leave/Drop 全程调用才有图像）。</summary>
