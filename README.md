@@ -161,8 +161,12 @@ The runtime log is `macdesk.log` next to the executable.
 - Right-click menus run in a one-shot child process on purpose: `QueryContextMenu`
   loads every installed shell extension, and a bad one fails fast (`c0000409`)
   hard enough to bypass managed exception handling.
-- A resolution change is handled by relaunching (attaching fresh is reliable at
-  any DPI; live re-mount is not) — expect a sub-second flash.
+- A resolution change is handled by a seamless process handoff: the old
+  instance keeps covering the desktop while a replacement attaches at the new
+  resolution (attaching fresh is reliable at any DPI; live re-mount is not),
+  seeds icon positions from the old instance, and morphs them to their new
+  spots — no bare-desktop flash. If the replacement fails to appear, the old
+  instance falls back to the watchdog-relaunch path.
 
 More hard-won implementation constraints (don't regress them on a refactor) are
 in [`docs/dev-notes.zh.md`](docs/dev-notes.zh.md).

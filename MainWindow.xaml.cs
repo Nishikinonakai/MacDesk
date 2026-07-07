@@ -260,7 +260,25 @@ public partial class MainWindow : Window
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
             Log.Write($"[{MonKey}] attached+laid out worksize={RootGrid.ActualWidth:F0}x{RootGrid.ActualHeight:F0} icons={_icons.Count}");
-            LayoutAll(animated: false);
+            // 分辨率交接：先把图标放到"老进程位置按比例映射"的起点，再动画滑向推导位
+            //（macOS 式 morph——分辨率切换不再是跳变，图标原地滑到新家）
+            if (App.HandoffSeed != null && App.HandoffSeed.TryGetValue(MonKey, out var seed) &&
+                seed.W > 1 && seed.H > 1)
+            {
+                var (w, h) = WorkSize;
+                double kx = w / seed.W, ky = h / seed.H;
+                int seeded = 0;
+                foreach (var iv in _icons.Values)
+                {
+                    if (!seed.Icons.TryGetValue(Path.GetFileName(iv.Entry.Path), out var p)) continue;
+                    MoveElement(iv.Root, p[0] * kx, p[1] * ky, false, EaseGlide, GlideMs);
+                    seeded++;
+                }
+                Log.Write($"[{MonKey}] handoff morph: {seeded}/{_icons.Count} icons seeded (scale {kx:F2}x{ky:F2})");
+                LayoutAll(animated: true);
+            }
+            else LayoutAll(animated: false);
+            App.NotifyHandoffReadyIfComplete();
         });
     }
 
@@ -283,14 +301,72 @@ public partial class MainWindow : Window
 
     // ── 显示变化 ──────────────────────────────────────────────
 
+    private bool _handoffInProgress;
+
+    /// <summary>显示变化 → 原地平滑交接（活体改尺寸不可救是定案，见下；旧方案 = 立刻自杀等
+    /// 看门狗拉新实例，~1s 裸桌面闪屏）。新方案：本进程窗口原地撑住画面，spawn `--handoff`
+    /// 替身在新分辨率下走"启动时挂载"可靠路径；替身把图标按种子放到比例映射的旧位置再动画
+    /// 滑向推导位（macOS 式 morph），全部就绪发 Ready，本进程才退休。超时 = 回退旧路径。</summary>
     private void OnDisplayChangedDebounced()
     {
-        if (!_attached) return;
+        if (!_attached || _handoffInProgress) return;
+        _handoffInProgress = true;
         // 重挂子窗口的活体改尺寸在 WPF/DPI 虚拟化下不可靠（多次实测：MoveWindow 后布局尺寸卡旧值）。
-        // 而"启动时挂载"在任何分辨率都正确 → 退出让看门狗拉起全新实例接管（布局分档，零状态损失）。
-        Log.Write("display change -> exit for watchdog relaunch");
-        Services.Watchdog.EnsureRunning(App.LaunchModeArgs); // 保证有看门狗来接管重启
-        Close();
+        Log.Write("display change -> spawning handoff replacement");
+        Services.Watchdog.EnsureRunning(App.LaunchModeArgs); // 兜底：超时路径仍靠它接管
+
+        try
+        {
+            var seed = new Dictionary<string, Handoff.MonitorSeed>();
+            foreach (var w in Desktop.Windows.Where(w => w.Attached)) w.CollectHandoffSeed(seed);
+            Handoff.WriteSeed(seed);
+        }
+        catch (Exception ex) { Log.Write("seed collect failed: " + ex.Message); }
+
+        _msgWin?.Dispose(); _msgWin = null;      // 释放全局热键，替身才能注册成功
+        App.ReleaseInstanceMutexForHandoff();     // 替身正常拿单实例锁
+
+        var ready = new EventWaitHandle(false, EventResetMode.ManualReset, Handoff.ReadyEventName);
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
+            foreach (var a in App.LaunchModeArgs) psi.ArgumentList.Add(a);
+            psi.ArgumentList.Add("--handoff");
+            psi.ArgumentList.Add(Environment.ProcessId.ToString());
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            // spawn 都失败 → 老路径：自杀等看门狗
+            Log.Write("handoff spawn failed: " + ex.Message);
+            ready.Dispose();
+            Close();
+            return;
+        }
+
+        new Thread(() =>
+        {
+            bool ok = ready.WaitOne(TimeSpan.FromSeconds(15));
+            ready.Dispose();
+            Log.Write(ok ? "handoff ready -> retiring old instance"
+                         : "handoff timeout -> plain exit, watchdog takes over");
+            if (ok) Services.Watchdog.SignalCleanQuit(); // 替身会拉起自己的看门狗
+            Dispatcher.BeginInvoke(Close);
+        }) { IsBackground = true }.Start();
+    }
+
+    /// <summary>交接种子：本窗口图标的当前 DIU 坐标 + 工作区尺寸（替身按比例映射做 morph 起点）。</summary>
+    internal void CollectHandoffSeed(Dictionary<string, Handoff.MonitorSeed> seed)
+    {
+        var (w, h) = WorkSize;
+        var mon = new Handoff.MonitorSeed { W = w, H = h };
+        foreach (var iv in _icons.Values)
+        {
+            double l = Canvas.GetLeft(iv.Root), t = Canvas.GetTop(iv.Root);
+            if (double.IsNaN(l) || double.IsNaN(t)) continue;
+            mon.Icons[Path.GetFileName(iv.Entry.Path)] = new[] { l, t };
+        }
+        seed[MonKey] = mon;
     }
 
     private Native.RECT _forceRect; // 本窗口在父客户区坐标里的目标矩形（钩子钳制用）

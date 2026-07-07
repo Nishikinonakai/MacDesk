@@ -19,12 +19,14 @@ internal static class Watchdog
     private const string WatchdogMutexName = "MacDesk.Watchdog";
     private const string CleanQuitEventName = "MacDesk.CleanQuit";
 
-    /// <summary>主进程启动时调用：若还没有看门狗，拉起一个盯着自己。</summary>
-    public static void EnsureRunning(IEnumerable<string> modeArgs)
+    /// <summary>主进程启动时调用：若还没有看门狗，拉起一个盯着自己。
+    /// 返回 true = 本次真的拉起了新看门狗；false = 已有现役（交接接管方靠此轮询等
+    /// 老看门狗退场后再武装自己）。</summary>
+    public static bool EnsureRunning(IEnumerable<string> modeArgs)
     {
         try
         {
-            try { using var _ = Mutex.OpenExisting(WatchdogMutexName); return; } // 已有看门狗
+            try { using var _ = Mutex.OpenExisting(WatchdogMutexName); return false; } // 已有看门狗
             catch (WaitHandleCannotBeOpenedException) { /* 没有，往下拉起 */ }
 
             var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
@@ -33,8 +35,9 @@ internal static class Watchdog
             foreach (var a in modeArgs) psi.ArgumentList.Add(a);
             Process.Start(psi);
             Log.Write($"watchdog spawned for main pid={Environment.ProcessId}");
+            return true;
         }
-        catch (Exception ex) { Log.Write("EnsureRunning failed: " + ex.Message); }
+        catch (Exception ex) { Log.Write("EnsureRunning failed: " + ex.Message); return false; }
     }
 
     /// <summary>用户主动退出：置 CleanQuit，让看门狗停手（而非把主进程再拉起来）。</summary>

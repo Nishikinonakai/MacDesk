@@ -30,6 +30,39 @@ public partial class App : Application
     /// <summary>本实例是被恢复逻辑（自我重启/Explorer 重启接管）拉起的：挂载失败时安静退出不弹框。</summary>
     public static bool LaunchedByRecovery { get; private set; }
 
+    /// <summary>本实例是分辨率交接的接管方（--handoff &lt;oldPid&gt;）：老进程还活着撑画面，
+    /// 我们挂载就绪后发 Ready 让它退休，老看门狗退场后再拉起自己的。</summary>
+    public static bool HandoffTakeover { get; private set; }
+    private static int _handoffOldPid;
+
+    /// <summary>交接种子（老进程的图标位置），启动时读一次；非交接启动为 null。</summary>
+    internal static Dictionary<string, Services.Handoff.MonitorSeed>? HandoffSeed { get; private set; }
+
+    /// <summary>老进程侧：交接前释放单实例互斥体，让替身能正常拿到。UI 线程调用（与获取同线程）。</summary>
+    public static void ReleaseInstanceMutexForHandoff()
+    {
+        try { _instanceMutex?.ReleaseMutex(); _instanceMutex?.Dispose(); } catch { }
+        _instanceMutex = null;
+    }
+
+    /// <summary>接管方：全部窗口挂载+首排完成 → 通知老进程退休（幂等，多窗口都会调）。</summary>
+    public static void NotifyHandoffReadyIfComplete()
+    {
+        if (!HandoffTakeover) return;
+        if (!Desktop.Windows.All(w => w.Attached)) return;
+        Services.Handoff.SignalReady();
+        HandoffTakeover = false; // 只发一次；后续显示变化按常规主进程处理
+        // 老进程退场（其看门狗随 CleanQuit 退休）后，拉起自己的看门狗
+        int oldPid = _handoffOldPid;
+        new Thread(() =>
+        {
+            try { System.Diagnostics.Process.GetProcessById(oldPid).WaitForExit(20000); } catch { }
+            Services.MenuHost.EnsureSpawned(); // 老 host 已随老进程退场，管道不再冲突
+            for (int i = 0; i < 30 && !Services.Watchdog.EnsureRunning(LaunchModeArgs); i++)
+                Thread.Sleep(500); // 老看门狗尚在（CleanQuit 传播中）→ 轮询到它退场
+        }) { IsBackground = true }.Start();
+    }
+
     /// <summary>启动时的持久模式开关（自我重启/开机自启复现用户选的模式；排除 --quit 等一次性动作）。</summary>
     public static string[] LaunchModeArgs { get; private set; } = Array.Empty<string>();
 
@@ -49,6 +82,13 @@ public partial class App : Application
         NoChildStyle = e.Args.Contains("--no-child");
         ParentMode = e.Args.FirstOrDefault(a => a.StartsWith("--parent="))?.Substring(9) ?? "defview";
         LaunchedByRecovery = e.Args.Contains("--recovered");
+        int ho = Array.IndexOf(e.Args, "--handoff");
+        if (ho >= 0 && ho + 1 < e.Args.Length && int.TryParse(e.Args[ho + 1], out _handoffOldPid))
+        {
+            HandoffTakeover = true;
+            LaunchedByRecovery = true; // 挂载失败时安静退出别弹框（老进程还在撑着）
+            HandoffSeed = Services.Handoff.TryLoadSeed();
+        }
         LaunchModeArgs = ExtractModeArgs(e.Args);
         if (e.Args.Contains("--soft"))
             System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
@@ -162,7 +202,9 @@ public partial class App : Application
         _instanceMutex = new Mutex(true, "MacDesk.SingleInstance", out bool createdNew);
         if (!createdNew)
         {
-            MessageBox.Show("MacDesk 已在运行。用 MacDesk.exe --quit 退出。", "MacDesk");
+            // 恢复/交接拉起的实例撞上活体 = 竞态残留，安静退让别弹框（用户手动双开才提示）
+            if (!LaunchedByRecovery)
+                MessageBox.Show("MacDesk 已在运行。用 MacDesk.exe --quit 退出。", "MacDesk");
             Shutdown();
             return;
         }
@@ -175,11 +217,14 @@ public partial class App : Application
         }) { IsBackground = true };
         waiter.Start();
 
-        // 拉起看门狗盯着自己（Explorer 重启 / 崩溃后重新接管）
-        Services.Watchdog.EnsureRunning(LaunchModeArgs);
+        // 拉起看门狗盯着自己（Explorer 重启 / 崩溃后重新接管）。
+        // 交接接管方例外：老看门狗还在盯老进程，等 Ready 后由 NotifyHandoffReadyIfComplete 接棒。
+        if (!HandoffTakeover) Services.Watchdog.EnsureRunning(LaunchModeArgs);
 
-        // 预热常驻菜单 host：shell 扩展 DLL 现在加载，右键菜单零冷启动
-        Services.MenuHost.EnsureSpawned();
+        // 预热常驻菜单 host：shell 扩展 DLL 现在加载，右键菜单零冷启动。
+        // 交接接管方推迟到老进程退场后（NotifyHandoffReadyIfComplete）——两个 host 抢同名
+        // 管道会刷 "All pipe instances are busy" 且探针可能在混战中误判降级（真机实锤）。
+        if (!HandoffTakeover) Services.MenuHost.EnsureSpawned();
 
         // 菜单深色模式跟随（v2 菜单在本进程弹出才有意义；浅色主题下无可见变化）
         Services.ShellContextMenu.EnableModernMenuTheme();
