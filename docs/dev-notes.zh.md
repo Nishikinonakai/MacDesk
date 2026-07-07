@@ -199,6 +199,23 @@ SHELLDLL_DefView
   注入测试铁律：idle<180s 不动桌面）。若仍不够流畅，下一招是脏区裁剪渲染（PushClip 只
   光栅化变化区域）或静止层预合成。
 
+## 2026-07-07 夜：点击转发 v2 + 性能开关（commit 3624746，机主反馈轮 2）
+
+- **DDLC 验证作废**（机主指正：chibi 是 hover 触发不是 click）。正规样本 = All-in-one
+  Raindrops（Web 型，底部天气按钮，`main.js` canvas click 监听）。归因链真机走完：
+  ①原生（MacDesk 退出）按钮可点 → WE 自己的鼠标钩子在"点的是桌面"时把 click 喂给 CEF；
+  ②我们的输入层在上面时钩子不喂（hover 态还亮是因为 move 有独立的全局注入管道）；
+  ③v1 转发发给 WPEDesktopCEFWindow 宿主窗无效——**Chromium 的鼠标消息处理在
+  `Chrome_RenderWidgetHostHWND` 叶子窗**。修 = `FindInputSink()` 下钻 CEF 叶子（场景型
+  退回收编窗），转发 WM_MOUSEMOVE + DOWN/UP（ScreenToClient 坐标）。**真机实锤：隔着
+  MacDesk 点 Rain 按钮天气切换成功**。场景型（SceneScript cursorClick）的转发是否被 WE
+  接受未验证（手头没有 click 型场景壁纸），Web 型已确证。
+- **性能开关（机主点名）**：外观页"使用动态壁纸时禁用图标阴影"（默认开 = Effect strip
+  现状，好显卡可关）+ "使用动态壁纸时禁用动画"（默认关；开了 MoveElement/FadeTo 全部
+  瞬移，低配帧率保底）。阴影开关 live 生效（RefreshDynamicPerf）。
+- 帧成本现状：1080p 摘阴影后 pump burst avg ~50ms/帧（20fps）。下一档优化 = 脏区裁剪
+  渲染（PushClip 只光栅化变化区域 + CopyPixels 脏矩形），backlog。
+
 ## Backlog（2026-07-07 傍晚刷新）
 
 - Stacks v2 剩余：拖文件进堆（手动归类）、多屏叠放策略复核（待机主双屏实用反馈，现状=每窗口对自己图标聚堆；机主拖 Jellyfin 去 TV 就是在试这个）。
