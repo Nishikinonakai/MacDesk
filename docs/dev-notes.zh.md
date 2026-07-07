@@ -1005,3 +1005,27 @@ release zip 只含 CI 构建产物，**不可能被发版带走**。
 - **4K 注入测试坑**：代理 PS 进程无 DPI 感知，GetSystemMetrics/SetCursorPos 全被
   虚拟化（4096→1365）——注入前必须 SetThreadDpiAwarenessContext(-4)；/screen 端点
   不受影响（返回物理分辨率）。
+
+## 2026-07-08 凌晨 II：4K 动态 benchmark + 节流修复 + 4K30 瓶颈诊断（机主三问收尾）
+
+- **节流 EMA 混流 bug（4K 动态真机实锤，commit 本节）**：入场全帧 251ms 把
+  _frameCostMs 的 EMA 打高 → minGap 500ms → 整段 430ms 堆动画只推 1-4 帧（幻灯片）。
+  脏区帧便宜但 EMA 收敛太慢拉不回来。修 = 帧成本直赋（gap 基准 = 上一帧实际成本）：
+  贵的全帧后歇 2×cost 保护 UI 线程，便宜的 patch 帧立即回高频。
+  修后 4K 动态堆动画 6-7 帧 avg ~70ms（~14fps，可看）；1080p 不受影响（60fps）。
+- **4K 动态 benchmark 定档**：全帧 251ms（8.8M 像素软件光栅化）、脏区动画帧 ~70ms。
+  Vega 7 + 4K + 动态壁纸 = 能用不丝滑，机主自己的判断（"不该挑战"）成立。WE 开/关的
+  收编与回退在 4K 全部自愈正常。WE 优雅退出用 taskkill（-control exit 无效），
+  子进程 webwallpaper64 要 /F 才断。
+- **4K30 瓶颈诊断（机主好奇提问）**：TV（SKG5500）EDID 广播完整 HDMI 2.0——HF-VSDB
+  Max TMDS 600MHz + SCDC + VIC 97/102（3840/4096@60）→ 电视无罪。驱动模式表 2160p
+  全档只有 ≤30Hz，**连 4:2:0 形态的 50/60Hz 都没有** → 源端（PELADN WO4 的 HDMI 链路）
+  被当 HDMI 1.4（≤340MHz、无 4:2:0）跑，尽管官方规格页标 HDMI 2.0 4K60、5600H
+  (Cezanne) 芯片本身支持。嫌疑排序：固件/VBIOS 连接器描述 1.4 > 线材握手降级 >
+  板上 redriver 是 1.4 级。建议：换 Premium High Speed 线 / 刷 BIOS / DP 口 +
+  主动 DP→HDMI2.0 头（Dell 挪 HDMI）。诊断方法沉淀：注册表 EDID + GDI 全模式表
+  （EnumDisplaySettings 的 PS 封送会静默失败，**结构体封送必须写进 C# 类里做**）。
+- **机主裁决入档**：孤儿=只清数据不做自动逻辑（已完成）；多屏叠放=各屏各算（定案）；
+  高 DPI 拖拽图像=不修（Windows 原生同款行为，已足够）；**拖文件进堆=关闭**——
+  类型/日期/大小都是派生分组，手动归类语义冲突，macOS 桌面 Stacks 同样不支持，
+  现行为（落画布自动归位）无害。

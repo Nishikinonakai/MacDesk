@@ -3029,7 +3029,8 @@ public partial class MainWindow : Window
             _patchBitmap.Render(dvp);
             _presenter.PushDirty(_patchBitmap, x, y);
             double costP = (DateTime.UtcNow - t0p).TotalMilliseconds;
-            _frameCostMs = _frameCostMs * 0.8 + costP * 0.2;
+            _frameCostMs = costP; // 直赋不做 EMA：4K 真机实锤入场全帧 250ms 会把 EMA 拖住，
+                                  // 动画期脏区帧便宜也拉不回 gap，整段动画只推 1-4 帧
             _burstFrames++;
             _burstCostMs += costP;
             return;
@@ -3048,7 +3049,8 @@ public partial class MainWindow : Window
         _presenter.PushFrame(_frameBitmap);
 
         double cost = (DateTime.UtcNow - t0).TotalMilliseconds;
-        _frameCostMs = _frameCostMs * 0.8 + cost * 0.2;
+        _frameCostMs = cost; // 直赋（见 patch 分支注释）：贵的全帧后歇 2×cost 保护 UI 线程，
+                             // 下一帧若是便宜的脏区帧，gap 立即回到高频
         _burstFrames++;
         _burstCostMs += cost;
     }
