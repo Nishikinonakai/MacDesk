@@ -725,12 +725,25 @@ internal sealed class SettingsWindow : Window
         {
             upd.IsEnabled = false;
             status.Text = "检查中…";
-            var (has, msg, url) = await UpdateCheck.Run();
+            var (has, msg, url, tag) = await UpdateCheck.Run();
             status.Text = msg;
+            if (!has || tag == null) { upd.IsEnabled = true; return; }
+            var r = MessageBox.Show(msg + "\n\n是 = 自动下载并安装（装完自动重启 MacDesk）\n否 = 打开下载页手动更新",
+                "MacDesk 更新", MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
+            if (r == MessageBoxResult.No && url != null) OpenUrl(url);
+            else if (r == MessageBoxResult.Yes)
+            {
+                try
+                {
+                    string setup = await UpdateCheck.DownloadSetup(tag, p => status.Text = $"下载更新… {p}%");
+                    status.Text = "安装中…（MacDesk 将自动重启）";
+                    // 安装器会 --quit 我们 → 还原原生图标 → 换文件 → /RELAUNCH 拉起新版本
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(setup, "/VERYSILENT /RELAUNCH=1")
+                    { UseShellExecute = true });
+                }
+                catch (Exception ex) { status.Text = "下载失败：" + ex.Message; }
+            }
             upd.IsEnabled = true;
-            if (has && url != null &&
-                MessageBox.Show(msg + "\n\n前往下载页？", "MacDesk 更新", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
-                OpenUrl(url);
         };
         var diag = new Button { Content = "导出诊断包…", Padding = new Thickness(16, 5, 16, 5), Margin = new Thickness(10, 0, 0, 0) };
         diag.Click += (_, _) => ExportDiagnostics();

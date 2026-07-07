@@ -15,27 +15,60 @@ internal static class UpdateCheck
     public static string CurrentVersion =>
         typeof(UpdateCheck).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.0.0";
 
-    /// <summary>返回（是否有新版, 展示文案, 可打开的发布页 url 或 null）。
+    /// <summary>返回（是否有新版, 展示文案, 可打开的发布页 url 或 null, 新版 tag 或 null）。
     /// 主通道 = releases/latest 的 HTML 302 重定向（Location 头直接带 tag，github.com
     /// 页面端点无 API 限额）；API 只做备用——匿名 REST API 在共享代理出口 IP 下常年
     /// 403 限流（真机实测：v1.0.0 发版当天 API 403、重定向通道正常）。</summary>
-    public static async Task<(bool HasUpdate, string Message, string? Url)> Run()
+    public static async Task<(bool HasUpdate, string Message, string? Url, string? Tag)> Run()
     {
         try
         {
             string? tag = await LatestTagViaRedirect() ?? await LatestTagViaApi();
             if (tag == null)
-                return (false, "无法访问 GitHub（网络问题或接口限流），请稍后再试", null);
+                return (false, "无法访问 GitHub（网络问题或接口限流），请稍后再试", null, null);
             var latest = ParseVersion(tag);
             var mine = ParseVersion(CurrentVersion);
-            if (latest > mine) return (true, $"发现新版本 {tag}（当前 {CurrentVersion}）", $"{ReleasesPage}/tag/{tag}");
-            return (false, $"已是最新版本（{CurrentVersion}）", null);
+            if (latest > mine) return (true, $"发现新版本 {tag}（当前 {CurrentVersion}）", $"{ReleasesPage}/tag/{tag}", tag);
+            return (false, $"已是最新版本（{CurrentVersion}）", null, null);
         }
         catch (Exception ex)
         {
             Log.Write("update check failed: " + ex.Message);
-            return (false, "检查更新失败", null);
+            return (false, "检查更新失败", null, null);
         }
+    }
+
+    // ── 一键更新（v1.0.2）：下载 release 的 Setup 静默安装 ────────────
+    // 安装器 PrepareToInstall 会先 --quit 运行中的我们（还原原生图标）再换文件，
+    // /RELAUNCH=1 让它换完自动拉起新版本——全程用户只点一次"是"。
+
+    public static string SetupAssetUrl(string tag) =>
+        $"https://github.com/Nishikinonakai/MacDesk/releases/download/{tag}/MacDesk-Setup-{tag}.exe";
+
+    /// <summary>下载 Setup 到 %TEMP%，percent 回调 0-100（在调用方同步上下文触发）。</summary>
+    public static async Task<string> DownloadSetup(string tag, Action<int> percent)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("MacDesk-UpdateCheck");
+        using var resp = await http.GetAsync(SetupAssetUrl(tag), HttpCompletionOption.ResponseHeadersRead);
+        resp.EnsureSuccessStatusCode();
+        long total = resp.Content.Headers.ContentLength ?? -1;
+        string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"MacDesk-Setup-{tag}.exe");
+        await using var src = await resp.Content.ReadAsStreamAsync();
+        await using var dst = System.IO.File.Create(path);
+        var buf = new byte[1 << 16];
+        long done = 0; int n; int lastPct = -1;
+        while ((n = await src.ReadAsync(buf)) > 0)
+        {
+            await dst.WriteAsync(buf.AsMemory(0, n));
+            done += n;
+            if (total > 0)
+            {
+                int pct = (int)(done * 100 / total);
+                if (pct != lastPct) { lastPct = pct; percent(pct); }
+            }
+        }
+        return path;
     }
 
     private static async Task<string?> LatestTagViaRedirect()

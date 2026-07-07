@@ -51,8 +51,15 @@ Name: "{autoprograms}\MacDesk"; Filename: "{app}\MacDesk.exe"; Parameters: "--hi
 
 [Run]
 Filename: "{app}\MacDesk.exe"; Parameters: "--hide-native"; Description: "{cm:LaunchProgram,MacDesk}"; Flags: nowait postinstall skipifsilent
+; 应用内一键更新走 /VERYSILENT /RELAUNCH=1：静默换完文件自动拉起新版本
+Filename: "{app}\MacDesk.exe"; Parameters: "--hide-native"; Flags: nowait; Check: ShouldRelaunch
 
 [Code]
+function ShouldRelaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|0}') = '1';
+end;
+
 // 升级路径：先让已装副本优雅退出（--quit 会向运行中的实例发退出信号，
 // 该实例还原原生桌面图标、停看门狗后退出）
 function PrepareToInstall(var NeedsRestart: Boolean): String;
