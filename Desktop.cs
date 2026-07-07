@@ -48,6 +48,10 @@ internal static class Desktop
         Log.Write($"monitors: {string.Join(" | ", Monitors.Select(m => $"{m.Key}{(m.IsPrimary ? "*" : "")} {m.Device} ({m.Physical.Left},{m.Physical.Top} {m.Physical.Width}x{m.Physical.Height} dpi={m.Dpi})"))}");
 
         Layout = new LayoutStore(PrimaryKey);
+        Layout.DailyBackup(); // 启动即落当日滚动备份（每小时再查，跨零点长开机也有份）
+        var backupTimer = new DispatcherTimer { Interval = TimeSpan.FromHours(1) };
+        backupTimer.Tick += (_, _) => Layout.DailyBackup();
+        backupTimer.Start();
         Config = Settings.Load();
         Provider = new DesktopItemProvider();
 
@@ -130,17 +134,39 @@ internal static class Desktop
         return owner != null && _attachedKeys.Contains(owner) ? owner : PrimaryKey;
     }
 
-    /// <summary>全量刷新：枚举一次，按归属分发给各窗口。</summary>
+    /// <summary>全量刷新：枚举一次，按归属分发给各窗口。"导入布局"记名的 missing 项
+    /// 一并分发（macOS 式问号占位）；文件回来了自动除名让位真图标。</summary>
     public static void RefreshAll()
     {
         var all = Provider.Enumerate();
+        var present = new HashSet<string>(
+            all.Select(en => System.IO.Path.GetFileName(en.Path)), StringComparer.OrdinalIgnoreCase);
+        var returned = Layout.MissingListed.Where(present.Contains).ToList();
+        if (returned.Count > 0)
+        {
+            foreach (var n in returned) Layout.UnlistMissing(n);
+            Layout.Save();
+        }
+        var missing = Layout.MissingListed.Where(n => !present.Contains(n)).ToList();
         foreach (var w in Windows)
         {
             if (!w.Attached) continue;
             var subset = all.Where(en =>
                 EffectiveWindowKey(System.IO.Path.GetFileName(en.Path)) == w.Monitor.Key).ToList();
-            w.RefreshItems(subset);
+            var missSubset = missing.Where(n => EffectiveWindowKey(n) == w.Monitor.Key).ToList();
+            w.RefreshItems(subset, missSubset);
         }
+    }
+
+    /// <summary>"导入布局"完成后调用：当时缺文件的条目记入问号名单（只有这个动作会记名，
+    /// 历史遗留孤儿保持隐形），然后全量刷新重排。</summary>
+    public static void OnLayoutImported()
+    {
+        var present = new HashSet<string>(
+            Provider.Enumerate().Select(en => System.IO.Path.GetFileName(en.Path)), StringComparer.OrdinalIgnoreCase);
+        Layout.SetMissingList(Layout.AllNames().Where(n => !present.Contains(n)));
+        RefreshAll();
+        LayoutAllWindows(animated: true);
     }
 
     public static void LayoutAllWindows(bool animated)

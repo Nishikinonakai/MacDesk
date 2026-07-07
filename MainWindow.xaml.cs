@@ -475,7 +475,7 @@ public partial class MainWindow : Window
     // ── 图标集合 ──────────────────────────────────────────────
 
     /// <summary>协调器分发本窗口的图标子集（归属本显示器 + 主屏兜底的孤儿）。</summary>
-    internal void RefreshItems(IReadOnlyList<DesktopEntry> entries)
+    internal void RefreshItems(IReadOnlyList<DesktopEntry> entries, IReadOnlyList<string>? missingNames = null)
     {
         var alive = new HashSet<string>(entries.Select(en => en.Path));
 
@@ -498,8 +498,134 @@ public partial class MainWindow : Window
             IconCanvas.Children.Add(iv.Root);
             added = true;
         }
+
+        // 问号占位（布局条目在、文件不在，跨机导入场景）：随分发增删
+        var missSet = new HashSet<string>(missingNames ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        foreach (var gone in _missing.Keys.Where(k => !missSet.Contains(k)).ToList())
+        {
+            IconCanvas.Children.Remove(_missing[gone]);
+            _missing.Remove(gone);
+        }
+        foreach (var n in missSet)
+        {
+            if (_missing.ContainsKey(n)) continue;
+            var root = CreateMissingVisual(n);
+            _missing[n] = root;
+            IconCanvas.Children.Add(root);
+            added = true;
+        }
+
         if (added || _icons.Count > 0)
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => LayoutAll(animated: true));
+    }
+
+    // ── 跨机导入的 missing 项 = macOS 丢失别名同款问号占位（机主 spec）───────
+    // 布局里有条目、本机没有对应文件：不擅自删布局项，渲染成大问号图标占位；
+    // 用户右键"从布局中移除"自行清理。占位是惰性视觉：不可拖、不可开，只可移除。
+
+    private readonly Dictionary<string, Border> _missing = new(StringComparer.OrdinalIgnoreCase);
+    private const uint ID_MISSING_REMOVE = 0x7301;
+
+    private Border CreateMissingVisual(string name)
+    {
+        var q = new TextBlock
+        {
+            Text = "?",
+            Foreground = Brushes.White,
+            FontSize = 40,
+            FontFamily = LabelFontFamily,
+            FontWeight = FontWeights.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, -4, 0, 0),
+            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.6 },
+        };
+        var plate = new Border
+        {
+            Width = 58, Height = 58,
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(Color.FromArgb(0x42, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = q,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var iconPlate = new Border
+        {
+            Height = 64 + 12, // 与真实图标 iconPlate（64 图 + 6×2 padding）同高，标签基线对齐
+            Child = plate,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        string labelText = TruncateLabel(name);
+        var label = new TextBlock
+        {
+            Text = labelText,
+            Foreground = Brushes.White,
+            FontSize = 12,
+            FontFamily = LabelFontFamily,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            MaxHeight = 34,
+            Opacity = 0.9,
+            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+        };
+        TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
+        var labelPlate = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(5, 1, 5, 2),
+            Background = Brushes.Transparent,
+            Child = label,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            MaxWidth = CellW - 4,
+        };
+
+        var stack = new StackPanel();
+        stack.Children.Add(iconPlate);
+        stack.Children.Add(labelPlate);
+        var root = new Border
+        {
+            Width = CellW,
+            Child = stack,
+            Background = Brushes.Transparent,
+            ToolTip = new ToolTip { Content = $"{name}\n此项目在本机不存在（来自导入的布局）" },
+        };
+        string n = name;
+        root.MouseLeftButtonDown += (_, e) => e.Handled = true; // 别漏给画布启动框选
+        root.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            var pt = PointToScreen(e.GetPosition(this));
+            PrepareForMenu();
+            uint cmd = NativeMenuPresenter.Track(_hwnd,
+                new List<MenuSnapshot.Item> { new() { Id = ID_MISSING_REMOVE, Text = "从布局中移除" } },
+                (int)pt.X, (int)pt.Y);
+            if (cmd == ID_MISSING_REMOVE)
+            {
+                LayoutFile.Remove(n);
+                LayoutFile.Save();
+                Desktop.RefreshAll();
+            }
+        };
+        ApplyCacheMode(root);
+        return root;
+    }
+
+    /// <summary>问号占位的摆放：恒按规范锚距现场推导（自由/网格/叠放模式一律如此——
+    /// 占位不是文件，不参与列流与聚堆；叠放下可能与堆重叠，属可接受的临时态）。</summary>
+    private void PlaceMissing(bool animated)
+    {
+        foreach (var (name, root) in _missing)
+        {
+            var c = Desktop.EffectiveCanon(name);
+            if (c == null) continue; // 条目刚被移除，等下一轮分发清理视觉
+            var (l, t) = CanonToPos(c);
+            MoveElement(root, l, t, animated, EaseGlide, GlideMs);
+        }
     }
 
     private IconVisual CreateIconVisual(DesktopEntry en)
@@ -720,6 +846,12 @@ public partial class MainWindow : Window
     private HashSet<(int, int)> OccupiedCellsForSeeding()
     {
         var occ = new HashSet<(int, int)>();
+        foreach (var name in _missing.Keys)
+            if (Desktop.EffectiveCanon(name) is { } mc)
+            {
+                var (ml, mt) = CanonToPos(mc);
+                MarkFootprint(occ, ml, mt);
+            }
         foreach (var iv in _icons.Values.Where(i => i.Canon != null))
         {
             if (Config.FreePlacement)
@@ -746,6 +878,8 @@ public partial class MainWindow : Window
         if (w < 1 || h < 1) return;
         Log.Write($"[{MonKey}] layout pass worksize={w:F0}x{h:F0}{(Config.FreePlacement ? " [free]" : "")}{(Config.UseStacks ? " [stacks]" : "")}");
 
+        PlaceMissing(animated); // 问号占位恒按锚距摆放，与模式无关
+
         // 使用叠放（macOS Use Stacks）：独立的自动整理模式，不碰规范布局，关闭即恢复
         if (Config.UseStacks) { LayoutStacks(animated); return; }
         if (_stackPiles.Count > 0) ClearStacks();
@@ -760,6 +894,14 @@ public partial class MainWindow : Window
         }
 
         var placed = new HashSet<(int, int)>();
+
+        // 问号占位的脚印也计入占用，新图标列流别叠上去
+        foreach (var name in _missing.Keys)
+            if (Desktop.EffectiveCanon(name) is { } mc)
+            {
+                var (ml, mt) = CanonToPos(mc);
+                MarkFootprint(placed, ml, mt);
+            }
 
         if (Config.FreePlacement)
         {

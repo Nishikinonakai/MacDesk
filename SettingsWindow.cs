@@ -25,6 +25,7 @@ using Image = System.Windows.Controls.Image;
 using FontWeights = System.Windows.FontWeights;
 using Control = System.Windows.Controls.Control;
 using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
+using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
 
 namespace MacDesk;
 
@@ -429,6 +430,50 @@ internal sealed class SettingsWindow : Window
             catch (Exception ex) { MessageBox.Show("导入失败：" + ex.Message, "MacDesk"); }
         };
         layoutSec.Children.Add(Row("导入原生桌面布局", importBtn, "读取隐藏的原生桌面图标位置并应用到 MacDesk"));
+
+        layoutSec.Children.Add(Separator());
+        var exportBtn = new Button { Content = "导出…", Padding = new Thickness(14, 4, 14, 4) };
+        exportBtn.Click += (_, _) =>
+        {
+            var dlg = new SaveFileDialog
+            {
+                Title = "导出 MacDesk 布局",
+                Filter = "MacDesk 布局 (*.json)|*.json",
+                FileName = $"MacDesk-layout-{DateTime.Now:yyyyMMdd}.json",
+            };
+            if (dlg.ShowDialog() != true) return;
+            try
+            {
+                Desktop.Layout.Export(dlg.FileName);
+                MessageBox.Show("布局已导出。", "MacDesk");
+            }
+            catch (Exception ex) { MessageBox.Show("导出失败：" + ex.Message, "MacDesk"); }
+        };
+        layoutSec.Children.Add(Row("导出布局", exportBtn, "把当前图标布局存成文件（换机/重装时导入恢复）"));
+
+        layoutSec.Children.Add(Separator());
+        var importLayoutBtn = new Button { Content = "导入…", Padding = new Thickness(14, 4, 14, 4) };
+        importLayoutBtn.Click += (_, _) =>
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "导入 MacDesk 布局",
+                Filter = "MacDesk 布局 (*.json)|*.json|所有文件 (*.*)|*.*",
+            };
+            if (dlg.ShowDialog() != true) return;
+            if (MessageBox.Show("导入将替换当前布局（当前布局会先自动备份）。\n本机不存在的项目会显示为问号占位，可右键移除。",
+                    "导入布局", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (Desktop.Layout.TryImport(dlg.FileName))
+            {
+                Desktop.OnLayoutImported();
+                MessageBox.Show("布局已导入。", "MacDesk");
+            }
+            else
+                MessageBox.Show("导入失败：文件不是有效的 MacDesk 布局。当前布局未受影响。", "MacDesk",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+        };
+        layoutSec.Children.Add(Row("导入布局", importLayoutBtn, "从导出的布局文件恢复图标摆放"));
+
         p.Children.Add(Card(layoutSec));
 
         var advanced = new StackPanel();

@@ -58,7 +58,28 @@ internal sealed class LayoutStore
     public void Remove(string name)
     {
         foreach (var sec in _monitors.Values) sec.Remove(name);
+        _missingListed.Remove(name);
     }
+
+    /// <summary>全部布局条目名（跨显示器去重）。</summary>
+    public IEnumerable<string> AllNames() => _monitors.SelectMany(m => m.Value.Keys).Distinct();
+
+    // ── 问号占位名单（机主 spec：跨机导入的 missing 项渲染成 macOS 式问号，绝不擅自清）──
+    // 只有"导入布局"动作会把当时缺文件的条目记进名单（persist 在 layout.json "missing"）；
+    // 历史遗留的孤儿条目（正常使用中累积的）不进名单、保持隐形——真机检查发现现役档里
+    // 已有 15 个这类孤儿，无差别渲染会让用户桌面突然冒一排问号。
+    private HashSet<string> _missingListed = new(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyCollection<string> MissingListed => _missingListed;
+
+    public void SetMissingList(IEnumerable<string> names)
+    {
+        _missingListed = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+        Save();
+    }
+
+    /// <summary>文件回来了（用户把东西拷到桌面）→ 除名，占位让位给真图标。</summary>
+    public void UnlistMissing(string name) => _missingListed.Remove(name);
 
     public void ClearMonitor(string monKey) => Section(monKey).Clear();
 
@@ -74,6 +95,10 @@ internal sealed class LayoutStore
                 root.TryGetProperty("version", out var ver) && ver.GetInt32() >= 4)
             {
                 _monitors = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, CanonPos>>>(mons.GetRawText()) ?? new();
+                if (root.TryGetProperty("missing", out var miss))
+                    _missingListed = new HashSet<string>(
+                        JsonSerializer.Deserialize<List<string>>(miss.GetRawText()) ?? new(),
+                        StringComparer.OrdinalIgnoreCase);
             }
             else if (root.TryGetProperty("icons", out var icons))
             {
@@ -117,9 +142,74 @@ internal sealed class LayoutStore
         try
         {
             var payload = new Dictionary<string, object> { ["version"] = 4, ["monitors"] = _monitors };
+            if (_missingListed.Count > 0) payload["missing"] = _missingListed.OrderBy(n => n, StringComparer.OrdinalIgnoreCase);
             File.WriteAllText(_file, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { /* 磁盘写失败不致命 */ }
+    }
+
+    // ── 备份 / 导出导入（机主 spec，2026-07-07）────────────────
+
+    private string BackupDir
+    {
+        get
+        {
+            var dir = Path.Combine(Path.GetDirectoryName(_file)!, "backups");
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+    }
+
+    /// <summary>滚动备份：当日尚无备份就落一份（layout-yyyyMMdd.json），保留最近 7 份。
+    /// 启动时 + 每小时检查各调一次，防崩溃/升级兼容事故毁掉唯一的布局档。</summary>
+    public void DailyBackup()
+    {
+        try
+        {
+            if (!File.Exists(_file)) return;
+            var today = Path.Combine(BackupDir, $"layout-{DateTime.Now:yyyyMMdd}.json");
+            if (File.Exists(today)) return;
+            File.Copy(_file, today);
+            foreach (var old in Directory.GetFiles(BackupDir, "layout-????????.json")
+                         .OrderByDescending(f => f, StringComparer.Ordinal).Skip(7))
+                File.Delete(old);
+            Log.Write($"layout daily backup -> {Path.GetFileName(today)}");
+        }
+        catch { /* 备份失败不致命 */ }
+    }
+
+    /// <summary>导出当前布局（先落盘再拷贝，导出的就是权威状态）。</summary>
+    public void Export(string path)
+    {
+        Save();
+        File.Copy(_file, path, overwrite: true);
+    }
+
+    /// <summary>导入布局文件：校验能解析出任一已知版本（v2/v3/v4）→ 当前布局先存
+    /// 时间戳备份 → 替换 → 原地重载（Load 自带旧版本迁移）。失败返回 false 且不动现状。</summary>
+    public bool TryImport(string path)
+    {
+        try
+        {
+            var text = File.ReadAllText(path);
+            using (var doc = JsonDocument.Parse(text))
+            {
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("monitors", out _) &&
+                    !root.TryGetProperty("icons", out _) &&
+                    !root.TryGetProperty("profiles", out _)) return false;
+            }
+            Save();
+            if (File.Exists(_file))
+                File.Copy(_file, Path.Combine(BackupDir, $"layout-before-import-{DateTime.Now:yyyyMMdd-HHmmss}.json"), overwrite: true);
+            File.WriteAllText(_file, text);
+            _monitors = new();
+            _missingListed = new(StringComparer.OrdinalIgnoreCase);
+            Load();
+            Log.Write($"layout imported from {path}");
+            return true;
+        }
+        catch { return false; }
     }
 
     /// <summary>破坏性操作（一键整理/排序）前调用：把当前布局存成撤销点。</summary>
