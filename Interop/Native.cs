@@ -11,6 +11,10 @@ internal static class Native
     public const int WS_POPUP = unchecked((int)0x80000000);
     public const int WS_EX_NOACTIVATE = 0x08000000;
     public const int WS_EX_TOOLWINDOW = 0x00000080;
+    public const int WS_EX_LAYERED = 0x00080000;
+    public const int WS_EX_TRANSPARENT = 0x00000020;
+
+    public const uint LWA_ALPHA = 0x2;
 
     public const int WM_DISPLAYCHANGE = 0x007E;
     public const int WM_DPICHANGED = 0x02E0;
@@ -26,6 +30,8 @@ internal static class Native
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOACTIVATE = 0x0010;
+    public const uint SWP_NOZORDER = 0x0004;
+    public const uint SWP_FRAMECHANGED = 0x0020;
 
     public const int SW_HIDE = 0;
     public const int SW_SHOW = 5;
@@ -67,6 +73,9 @@ internal static class Native
 
     [DllImport("user32.dll")]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
     [DllImport("user32.dll")]
     public static extern bool MoveWindow(IntPtr hWnd, int x, int y, int nWidth, int nHeight, bool bRepaint);

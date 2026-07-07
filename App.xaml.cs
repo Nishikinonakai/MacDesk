@@ -96,7 +96,7 @@ public partial class App : Application
         // 开机自启开关（一次性动作，设置完即退）：可带模式开关，如 --enable-autostart --hide-native
         if (e.Args.Contains("--enable-autostart"))
         {
-            Services.Autostart.Enable(LaunchModeArgs);
+            Services.Autostart.Enable(LaunchModeArgs, Services.Settings.Load().FastAutostart);
             Shutdown();
             return;
         }

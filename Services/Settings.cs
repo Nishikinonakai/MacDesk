@@ -30,6 +30,15 @@ internal sealed class Settings
     /// <summary>强调色 key（见 Accent.Palette），影响选中标签/框选颜色。</summary>
     public string AccentColor { get; set; } = "blue";
 
+    /// <summary>真透明（动态壁纸透传）："三明治"架构——WPF 窗降为近隐形输入层，画面由
+    /// 下层 ULW 呈现层逐像素 alpha 上屏，空白区透出 Wallpaper Engine 等动态壁纸。
+    /// 默认关（静态壁纸用镜像路径观感相同且更省电；开着没动态壁纸时底下是黑的）。</summary>
+    public bool TrueTransparency { get; set; }
+
+    /// <summary>自启动用计划任务（onlogon 即启）替代 Run 键，绕过 Windows 对启动项的
+    /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。</summary>
+    public bool FastAutostart { get; set; }
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -53,6 +62,8 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("AccentColor", out var ac) && ac.ValueKind == JsonValueKind.String)
                     s.AccentColor = ac.GetString()!;
                 if (doc.RootElement.TryGetProperty("UseStacks", out var us)) s.UseStacks = us.GetBoolean();
+                if (doc.RootElement.TryGetProperty("TrueTransparency", out var tt)) s.TrueTransparency = tt.GetBoolean();
+                if (doc.RootElement.TryGetProperty("FastAutostart", out var fa)) s.FastAutostart = fa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
                     s.StackGroupBy = gb.GetString()!;
             }
@@ -66,7 +77,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, TrueTransparency, FastAutostart },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

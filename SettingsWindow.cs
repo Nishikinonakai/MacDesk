@@ -1,3 +1,5 @@
+using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -22,6 +24,7 @@ using SolidColorBrush = System.Windows.Media.SolidColorBrush;
 using Image = System.Windows.Controls.Image;
 using FontWeights = System.Windows.FontWeights;
 using Control = System.Windows.Controls.Control;
+using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
 
 namespace MacDesk;
 
@@ -395,7 +398,14 @@ internal sealed class SettingsWindow : Window
 
         var startup = new StackPanel();
         startup.Children.Add(Row("开机自启", Toggle(Autostart.IsEnabled(),
-            v => { if (v) Autostart.Enable(App.LaunchModeArgs); else Autostart.Disable(); })));
+            v => { if (v) Autostart.Enable(App.LaunchModeArgs, Config.FastAutostart); else Autostart.Disable(); })));
+        startup.Children.Add(Separator());
+        startup.Children.Add(Row("加速自启动", Toggle(Config.FastAutostart, v =>
+        {
+            Config.FastAutostart = v;
+            Config.Save();
+            if (Autostart.IsEnabled()) Autostart.Enable(App.LaunchModeArgs, v); // 就地切换机制
+        }), "用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟）"));
         startup.Children.Add(Separator());
         startup.Children.Add(Row("菜单在主进程弹出", Toggle(Config.MenuInMainProcess,
             v => { Config.MenuInMainProcess = v; Config.Save(); }),
@@ -479,10 +489,10 @@ internal sealed class SettingsWindow : Window
         sec.Children.Add(Row("强调色", palette, "选中标签与框选的颜色，即时生效"));
         p.Children.Add(Card(sec));
 
-        var note = new StackPanel();
-        note.Children.Add(Row("壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
+        var wall = new StackPanel();
+        wall.Children.Add(Row("壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
             "在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）"));
-        p.Children.Add(Card(note));
+        p.Children.Add(Card(wall));
 
         return p;
     }
@@ -657,13 +667,70 @@ internal sealed class SettingsWindow : Window
                 MessageBox.Show(msg + "\n\n前往下载页？", "MacDesk 更新", MessageBoxButton.YesNo, MessageBoxImage.Information) == MessageBoxResult.Yes)
                 OpenUrl(url);
         };
+        var diag = new Button { Content = "导出诊断包…", Padding = new Thickness(16, 5, 16, 5), Margin = new Thickness(10, 0, 0, 0) };
+        diag.Click += (_, _) => ExportDiagnostics();
         btns.Children.Add(gh);
         btns.Children.Add(upd);
+        btns.Children.Add(diag);
         about.Children.Add(btns);
         about.Children.Add(status);
 
         p.Children.Add(Card(about));
         return p;
+    }
+
+    /// <summary>诊断包 = 日志 + 设置 + 布局档 + 环境摘要，zip 落在用户选的位置。
+    /// 只在用户主动点击时生成、绝不自动上传（与关于页"无遥测"承诺一致）；
+    /// 弹窗明示内容含桌面文件名等个人信息，发出去前用户可自查。</summary>
+    private static void ExportDiagnostics()
+    {
+        if (MessageBox.Show(
+                "诊断包用于向开发者反馈问题，将打包以下本机文件：\n\n" +
+                "• 运行日志（含桌面文件名、显示器型号等使用痕迹）\n" +
+                "• 设置 settings.json\n" +
+                "• 布局档 layout.json（桌面文件名与位置）\n" +
+                "• 环境摘要（系统版本、显示器、MacDesk 版本）\n\n" +
+                "不含任何文件内容，也不会自动上传——zip 保存在你选的位置，\n发送前可自行检查删改。继续导出？",
+                "导出诊断包", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        var dlg = new SaveFileDialog
+        {
+            FileName = $"MacDesk-diagnostics-{DateTime.Now:yyyyMMdd-HHmm}.zip",
+            Filter = "Zip 压缩包|*.zip",
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            string dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MacDesk");
+            using var zipStream = new FileStream(dlg.FileName, FileMode.Create);
+            using var zip = new ZipArchive(zipStream, ZipArchiveMode.Create);
+            void AddFile(string path, string entryName)
+            {
+                if (!File.Exists(path)) return;
+                using var es = zip.CreateEntry(entryName).Open();
+                // 日志/布局可能正被主进程写着，共享读打开
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                fs.CopyTo(es);
+            }
+            AddFile(Log.FilePath, "macdesk.log");
+            AddFile(Log.FilePath + ".1", "macdesk.log.1");
+            AddFile(Path.Combine(dataDir, "settings.json"), "settings.json");
+            AddFile(Path.Combine(dataDir, "layout.json"), "layout.json");
+            using (var w = new StreamWriter(zip.CreateEntry("environment.txt").Open()))
+            {
+                w.WriteLine($"MacDesk {UpdateCheck.CurrentVersion}");
+                w.WriteLine($"OS: {Environment.OSVersion}{(Environment.Is64BitOperatingSystem ? " x64" : "")}");
+                w.WriteLine($".NET: {Environment.Version}");
+                w.WriteLine($"Launch args: {string.Join(" ", App.LaunchModeArgs)}");
+                w.WriteLine($"Settings: free={Config.FreePlacement} stacks={Config.UseStacks}/{Config.StackGroupBy} " +
+                            $"menuMain={Config.MenuInMainProcess} trueTransparency={Config.TrueTransparency} fastAutostart={Config.FastAutostart}");
+                foreach (var m in Desktop.Monitors)
+                    w.WriteLine($"Monitor: {m.Key}{(m.IsPrimary ? " (primary)" : "")} " +
+                                $"({m.Physical.Left},{m.Physical.Top}) {m.Physical.Width}x{m.Physical.Height} dpi={m.Dpi}");
+            }
+            MessageBox.Show("诊断包已保存：\n" + dlg.FileName, "MacDesk");
+        }
+        catch (Exception ex) { MessageBox.Show("导出失败：" + ex.Message, "MacDesk"); }
     }
 
     private static void OpenUrl(string url)

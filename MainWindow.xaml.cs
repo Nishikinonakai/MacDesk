@@ -287,6 +287,8 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _presenter?.Dispose(); // 呈现层跟窗口同生共死（交接/退出时别留残影）
+        _presenter = null;
         if (IsPrimary)
         {
             SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
@@ -402,6 +404,7 @@ public partial class MainWindow : Window
             Height = Monitor.Physical.Height * ct.TransformFromDevice.M22;
             Log.Write($"[{MonKey}] covered; wpf scale={believed:F2} actual={actual:F2} correction={k:F3} wpf-size={Width:F0}x{Height:F0}");
         }
+        ApplyTrueTransparency(); // 透传态进入/矩形同步（默认关 = no-op）
     }
 
     // WPF 的尺寸账本（DIU）和窗口 DPI 在混合缩放下会打架，它总想按自己的理解改窗口大小。
@@ -461,8 +464,24 @@ public partial class MainWindow : Window
                 System.Runtime.InteropServices.Marshal.StructureToPtr(wp, lParam, false);
             }
         }
+        // 透传态：WPF 在 AllowsTransparency=false 下会主动从 exstyle 清掉 WS_EX_LAYERED
+        //（渲染管线不需要它）→ 我们靠 layered 让输入层近隐形的招就失效。拦 WM_STYLECHANGING
+        // 在 WPF 提议的新 exstyle 里把 layered 位强行加回（WM_STYLECHANGING 允许修改 styleNew，
+        // 系统用修改后的值应用）——根治，无闪烁。
+        if (msg == 0x007C /* WM_STYLECHANGING */ && _presenter != null && wParam == (IntPtr)Native.GWL_EXSTYLE)
+        {
+            var ss = System.Runtime.InteropServices.Marshal.PtrToStructure<STYLESTRUCT>(lParam);
+            if ((ss.styleNew & Native.WS_EX_LAYERED) == 0)
+            {
+                ss.styleNew |= Native.WS_EX_LAYERED;
+                System.Runtime.InteropServices.Marshal.StructureToPtr(ss, lParam, false);
+            }
+        }
         return IntPtr.Zero;
     }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct STYLESTRUCT { public int styleOld, styleNew; }
 
     // ── 图标集合 ──────────────────────────────────────────────
 
@@ -1125,12 +1144,14 @@ public partial class MainWindow : Window
             int idx = ((cur + (e.Delta < 0 ? 1 : -1)) % pv.Members.Count + pv.Members.Count) % pv.Members.Count;
             pv.ScrubIndex = idx;
             pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
+            PokeFrames(150); // 换图是纯渲染变化，LayoutUpdated 兜不住
         };
         root.MouseLeave += (_, _) =>
         {
             if (pv.ScrubIndex == -1) return;
             pv.ScrubIndex = -1;
             pv.IconFront.Source = pv.RestingFrontIcon;
+            PokeFrames(150);
         };
         return pv;
     }
@@ -1302,6 +1323,7 @@ public partial class MainWindow : Window
             EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut },
         };
         el.BeginAnimation(OpacityProperty, a);
+        PokeWindowOf(el, delayMs + ms + 150); // 透明度动画不触发布局，按动画时长催帧
     }
 
     /// <summary>清掉透明度动画并复位到全显——展开被收起中的成员、或隐藏完成后归位用。</summary>
@@ -1309,6 +1331,7 @@ public partial class MainWindow : Window
     {
         el.BeginAnimation(OpacityProperty, null);
         el.Opacity = 1;
+        PokeWindowOf(el, 100);
     }
 
     // ── 选择模型 ──────────────────────────────────────────────
@@ -1321,6 +1344,7 @@ public partial class MainWindow : Window
         if (on) _selection.Add(iv); else _selection.Remove(iv);
         iv.IconPlate.Background = on ? SelIconBg : Brushes.Transparent;
         iv.LabelPlate.Background = on ? SelLabelBg : Brushes.Transparent;
+        PokeFrames(120); // 笔刷变化是纯渲染，透传态要催帧
     }
 
     private void ClearSelection()
@@ -1458,6 +1482,7 @@ public partial class MainWindow : Window
         double homeY = group.Min(g => double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root));
 
         foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); } // 原位留影
+        PokeFrames(200);
         DragDropEffects? result = null;
         try { result = ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
@@ -1476,6 +1501,7 @@ public partial class MainWindow : Window
         {
             foreach (var g in group) g.Root.Opacity = 1;
             _dragGhosts.Clear();
+            PokeFrames(150);
         }
         // 后续：拖回自己/兄弟窗口 → OnDesktopDrop 重定位；Move 去外部 → FileSystemWatcher 移除图标
     }
@@ -1514,6 +1540,7 @@ public partial class MainWindow : Window
             IconCanvas.Children.Remove(ghost);
             foreach (var g in group) g.Root.Opacity = 1;
             _dragGhosts.Clear();
+            PokeFrames(150);
         }
         var dur = TimeSpan.FromMilliseconds(220);
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
@@ -1833,11 +1860,13 @@ public partial class MainWindow : Window
         RestoreCutIcons();
         if (cut)
             foreach (var s in items) { _cutIcons.Add(s); s.Root.Opacity = 0.5; } // 剪切态半透明
+            PokeFrames(150);
     }
 
     private void RestoreCutIcons()
     {
         foreach (var iv in _cutIcons) iv.Root.Opacity = 1;
+        PokeFrames(150);
         _cutIcons.Clear();
     }
 
@@ -2038,6 +2067,7 @@ public partial class MainWindow : Window
         string editText = isLink ? Path.GetFileNameWithoutExtension(fileName) : fileName;
 
         _renaming = iv;
+        StartRenameCaretPump(); // 透传态：光标闪烁是纯渲染变化，定时催帧
         _renameBox = new TextBox
         {
             Text = editText,
@@ -2101,6 +2131,7 @@ public partial class MainWindow : Window
         if (iv == null || box == null) return;
         _renaming = null;
         _renameBox = null;
+        StopRenameCaretPump();
 
         string oldPath = iv.Entry.Path;
         string oldName = Path.GetFileName(oldPath);
@@ -2134,6 +2165,7 @@ public partial class MainWindow : Window
         var iv = _renaming;
         _renaming = null;
         _renameBox = null;
+        StopRenameCaretPump();
         if (iv != null) RestoreLabel(iv);
     }
 
@@ -2256,6 +2288,7 @@ public partial class MainWindow : Window
         bool lit = on || _selection.Contains(iv); // 取消高亮时恢复真实选中态视觉
         iv.IconPlate.Background = lit ? SelIconBg : Brushes.Transparent;
         iv.LabelPlate.Background = lit ? SelLabelBg : Brushes.Transparent;
+        PokeFrames(150);
     }
 
     /// <summary>强调色变化后刷新当前选中态视觉（新选中自然用新色，这里补已选中的）。</summary>
@@ -2263,6 +2296,7 @@ public partial class MainWindow : Window
     {
         foreach (var iv in _selection) iv.LabelPlate.Background = SelLabelBg;
         if (_bandRect != null) { _bandRect.Fill = Accent.BandFill; _bandRect.Stroke = Accent.BandStroke; }
+        PokeFrames(150);
     }
 
     private void ClearSpring()
@@ -2467,6 +2501,7 @@ public partial class MainWindow : Window
 
     internal void ApplyDesktopBackground()
     {
+        if (_presenter != null) return; // 透传态：底就是真桌面，镜像/底色都不许画
         try
         {
             var info = Interop.DesktopWallpaper.ForMonitor(Monitor.Physical);
@@ -2574,4 +2609,206 @@ public partial class MainWindow : Window
         crop.Freeze();
         return crop;
     }
+
+    // ── 真透明（壁纸透传，"三明治"架构）────────────────────────
+    // 输入层 = 本 WPF 窗原样（WS_EX_LAYERED + 常量 alpha 1/255：整矩形照收输入、近隐形，
+    // 交互代码零改动）；呈现层 = 其下的 UlwPresenter（输入穿透），帧 = RootGrid 离屏
+    // RenderTargetBitmap → premult BGRA → ULW。脏驱动：静止零推送，LayoutUpdated 催帧
+    // 覆盖一切布局型变化，渲染专用变化（笔刷/透明度/换图）各埋点 Poke，2s 心跳兜底。
+
+    private UlwPresenter? _presenter;
+    private RenderTargetBitmap? _frameBitmap;
+    private bool _pumpOn;
+    private DateTime _pumpUntil;
+    private DateTime _lastFramePush = DateTime.MinValue;
+    private double _frameCostMs = 5; // EMA；自适应节流，4K 下渲染贵就自动降帧率
+    private DispatcherTimer? _frameHeartbeat;
+    private DispatcherTimer? _renameCaretPump;
+    private DispatcherTimer? _styleGuard;
+    private bool _inputLayerLogged;
+
+    /// <summary>把输入层降为近隐形 layered 窗口（整矩形收输入、alpha=1 视觉不可见）。
+    /// WM_STYLECHANGING 拦截保 layered 位不被 WPF 清，这里负责 LWA_ALPHA 值 + 首次诊断日志。</summary>
+    private void ApplyInputLayerStyle()
+    {
+        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+        if ((ex & Native.WS_EX_LAYERED) == 0)
+        {
+            Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, ex | Native.WS_EX_LAYERED);
+            ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+        }
+        Native.SetLayeredWindowAttributes(_hwnd, 0, 1, Native.LWA_ALPHA);
+        if (!_inputLayerLogged)
+        {
+            _inputLayerLogged = true;
+            Log.Write($"[{MonKey}] input layer style: ex=0x{ex:X} layered={(ex & Native.WS_EX_LAYERED) != 0}");
+        }
+    }
+
+    /// <summary>按 Config.TrueTransparency 进入/退出/同步透传态（挂载后、设置切换、CoverAndSync 复查时调）。</summary>
+    internal void ApplyTrueTransparency()
+    {
+        if (!_attached) return;
+        if (Config.TrueTransparency && _presenter == null) EnablePassthrough();
+        else if (!Config.TrueTransparency && _presenter != null) DisablePassthrough();
+        else if (_presenter != null)
+        {
+            _presenter.Sync(_hwnd, _forceRect);
+            RenderFrame();
+        }
+    }
+
+    private void EnablePassthrough()
+    {
+        var p = UlwPresenter.Create(DesktopLayer.ParentHwnd, _hwnd, _forceRect);
+        if (p == null)
+        {
+            Log.Write($"[{MonKey}] passthrough presenter FAILED; staying opaque");
+            return;
+        }
+        _presenter = p; // STYLECHANGING 拦截需要它先非空
+
+        // ⚠️ 已知硬障碍（2026-07-07 真机定案）：三明治的输入层隐身依赖 WPF 窗口能成为
+        // layered 窗口（LWA_ALPHA(1) 整矩形收输入 + 视觉近隐形）。但 WPF 用 D3D 重定向
+        // 渲染，child 窗口无法 layered——SetWindowLong 加 WS_EX_LAYERED 被系统拒（同进程
+        // 实测读回仍非 layered，WM_STYLECHANGING 拦截也保不住）。不 layered 的输入层会
+        // 不透明遮挡下层，反而全黑。故：试着施加，读回验证；没成就自动退回镜像态，绝不黑屏。
+        // 动态壁纸的正解改走 Windows.Graphics.Capture 镜像（backlog），不是这条透传路。
+        _inputLayerLogged = false;
+        ApplyInputLayerStyle();
+        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+        if ((ex & Native.WS_EX_LAYERED) == 0)
+        {
+            Log.Write($"[{MonKey}] passthrough UNAVAILABLE: WPF input layer can't be layered (ex=0x{ex:X}); reverting to mirror");
+            _presenter.Dispose();
+            _presenter = null;
+            _wallpaperSig = "";
+            ApplyDesktopBackground(); // 回镜像
+            return;
+        }
+
+        // （下面这段只有当环境允许 WPF layered 时才走到——当前所有实测环境都在上面回退了。
+        //  保留以备 WGC 或未来环境让 layered 生效时复用。）
+        _styleGuard = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        _styleGuard.Tick += (_, _) => ApplyInputLayerStyle();
+        _styleGuard.Start();
+
+        RemoveWallpaperImage();
+        _wallpaperSig = "";
+        RootGrid.Background = Brushes.Transparent;
+
+        if (DesktopLayer.NativeIconsVisible)
+        {
+            DesktopLayer.SetNativeIconsVisible(false);
+            Log.Write($"[{MonKey}] hid native icons for passthrough");
+        }
+
+        RootGrid.LayoutUpdated += OnLayoutUpdatedPoke;
+        _frameHeartbeat = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _frameHeartbeat.Tick += (_, _) => RenderFrame();
+        _frameHeartbeat.Start();
+
+        RenderFrame();
+        PokeFrames(600);
+        Log.Write($"[{MonKey}] true transparency ON presenter={p.Hwnd} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
+    }
+
+    private void DisablePassthrough()
+    {
+        RootGrid.LayoutUpdated -= OnLayoutUpdatedPoke;
+        _frameHeartbeat?.Stop();
+        _frameHeartbeat = null;
+        _styleGuard?.Stop();
+        _styleGuard = null;
+        StopRenameCaretPump();
+        if (_pumpOn) { CompositionTarget.Rendering -= OnPumpFrame; _pumpOn = false; }
+        _presenter?.Dispose();
+        _presenter = null;
+        _frameBitmap = null;
+
+        int ex = Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE);
+        Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE, ex & ~Native.WS_EX_LAYERED);
+        // 去掉 layered 位后促使 WPF 恢复正常上屏
+        Native.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0,
+            Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOZORDER | Native.SWP_NOACTIVATE | Native.SWP_FRAMECHANGED);
+        InvalidateVisual();
+
+        _wallpaperSig = "";
+        ApplyDesktopBackground(); // 回镜像路径（含 RootGrid 底色恢复）
+        Log.Write($"[{MonKey}] true transparency OFF");
+    }
+
+    /// <summary>渲染一帧到呈现层。VisualBrush + Stretch.Fill 把 RootGrid（含 LayoutTransform
+    /// DPI 补偿）直接映射到物理像素矩形，省掉所有 DIU/DPI 换算。</summary>
+    private void RenderFrame()
+    {
+        if (_presenter == null || !_attached) return;
+        int pw = Monitor.Physical.Width, ph = Monitor.Physical.Height;
+        if (pw < 1 || ph < 1 || RootGrid.ActualWidth < 1) return;
+        var t0 = DateTime.UtcNow;
+
+        if (_frameBitmap == null || _frameBitmap.PixelWidth != pw || _frameBitmap.PixelHeight != ph)
+            _frameBitmap = new RenderTargetBitmap(pw, ph, 96, 96, PixelFormats.Pbgra32);
+        else
+            _frameBitmap.Clear(); // RTB.Render 是叠加语义，透明底必须先清
+
+        var dv = new DrawingVisual();
+        using (var dc = dv.RenderOpen())
+            dc.DrawRectangle(new VisualBrush(RootGrid), null, new Rect(0, 0, pw, ph));
+        _frameBitmap.Render(dv);
+        _presenter.PushFrame(_frameBitmap);
+
+        _frameCostMs = _frameCostMs * 0.8 + (DateTime.UtcNow - t0).TotalMilliseconds * 0.2;
+    }
+
+    /// <summary>催帧：把帧泵维持到 holdMs 后（动画/交互期间持续推帧，静止自动停）。</summary>
+    internal void PokeFrames(int holdMs = 350)
+    {
+        if (_presenter == null) return;
+        var until = DateTime.UtcNow.AddMilliseconds(holdMs);
+        if (until > _pumpUntil) _pumpUntil = until;
+        if (_pumpOn) return;
+        _pumpOn = true;
+        CompositionTarget.Rendering += OnPumpFrame;
+    }
+
+    private void OnLayoutUpdatedPoke(object? s, EventArgs e) => PokeFrames();
+
+    private void OnPumpFrame(object? s, EventArgs e)
+    {
+        var now = DateTime.UtcNow;
+        if (now > _pumpUntil)
+        {
+            CompositionTarget.Rendering -= OnPumpFrame;
+            _pumpOn = false;
+            RenderFrame(); // 收尾帧：动画终值定格
+            return;
+        }
+        // 自适应节流：渲染成本的 4 倍为下限（4K 帧贵时自动降帧率，CPU 有界），上限 ~60fps
+        double minGap = Math.Clamp(_frameCostMs * 4, 15, 100);
+        if ((now - _lastFramePush).TotalMilliseconds < minGap) return;
+        _lastFramePush = now;
+        RenderFrame();
+    }
+
+    /// <summary>渲染型变化（不触发布局，LayoutUpdated 兜不住）的静态调用点用：
+    /// 笔刷/透明度动画/换图所在窗口催帧。</summary>
+    private static void PokeWindowOf(FrameworkElement el, int ms = 350) =>
+        (Window.GetWindow(el) as MainWindow)?.PokeFrames(ms);
+
+    /// <summary>重命名期间光标闪烁是纯渲染变化，低频定时催帧让呈现层跟上。</summary>
+    private void StartRenameCaretPump()
+    {
+        if (_presenter == null) return;
+        if (_renameCaretPump == null)
+        {
+            _renameCaretPump = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+            _renameCaretPump.Tick += RenameCaretTick;
+        }
+        _renameCaretPump.Start();
+    }
+
+    private void RenameCaretTick(object? s, EventArgs e) => PokeFrames(400);
+
+    private void StopRenameCaretPump() => _renameCaretPump?.Stop();
 }
