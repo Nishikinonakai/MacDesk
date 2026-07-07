@@ -99,7 +99,7 @@ internal sealed class SettingsWindow : Window
                Rgb(0x6E, 0x6E, 0x73), Brushes.Black, Rgb(0xFF, 0xFF, 0xFF), Rgb(0xD0, 0xD0, 0xD5),
                Rgb(0xE5, 0xE5, 0xE8), Brushes.White, Rgb(0xD0, 0xD0, 0xD5), Rgb(0x33, 0x33, 0x38), Rgb(0xC0, 0x2B, 0x2B));
 
-        Title = "MacDesk 设置";
+        Title = L.T("MacDesk 设置", "MacDesk Settings");
         Width = 760;
         Height = 540;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -129,14 +129,21 @@ internal sealed class SettingsWindow : Window
         _nav.BorderThickness = new Thickness(0);
         _nav.Background = Brushes.Transparent;
         _nav.ItemContainerStyle = NavItemStyle();
-        foreach (var (icon, name) in new[] { ("⚙️", "通用"), ("🎨", "外观"), ("📋", "右键菜单"), ("ℹ️", "关于") })
+        // Tag = 语言无关的稳定键（ShowPage 按键路由，显示文本另算）
+        foreach (var (icon, key, name) in new[]
+        {
+            ("⚙️", "general", L.T("通用", "General")),
+            ("🎨", "appearance", L.T("外观", "Appearance")),
+            ("📋", "menu", L.T("右键菜单", "Context Menu")),
+            ("ℹ️", "about", L.T("关于", "About")),
+        })
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal };
             row.Children.Add(new TextBlock { Text = icon, FontSize = 14, Margin = new Thickness(0, 0, 8, 0) });
             row.Children.Add(new TextBlock { Text = name, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
-            _nav.Items.Add(new ListBoxItem { Content = row, Tag = name });
+            _nav.Items.Add(new ListBoxItem { Content = row, Tag = key });
         }
-        _nav.SelectionChanged += (_, _) => ShowPage(((ListBoxItem)_nav.SelectedItem).Tag as string ?? "通用");
+        _nav.SelectionChanged += (_, _) => ShowPage(((ListBoxItem)_nav.SelectedItem).Tag as string ?? "general");
         sideStack.Children.Add(_nav);
         side.Child = sideStack;
         Grid.SetColumn(side, 0);
@@ -176,11 +183,11 @@ internal sealed class SettingsWindow : Window
         return style;
     }
 
-    private void ShowPage(string name) => _page.Content = name switch
+    private void ShowPage(string key) => _page.Content = key switch
     {
-        "外观" => BuildAppearance(),
-        "右键菜单" => BuildMenuPage(),
-        "关于" => BuildAbout(),
+        "appearance" => BuildAppearance(),
+        "menu" => BuildMenuPage(),
+        "about" => BuildAbout(),
         _ => BuildGeneral(),
     };
 
@@ -395,100 +402,115 @@ internal sealed class SettingsWindow : Window
 
     private UIElement BuildGeneral()
     {
-        var p = Page("通用");
+        var p = Page(L.T("通用", "General"));
 
         var startup = new StackPanel();
-        startup.Children.Add(Row("开机自启", Toggle(Autostart.IsEnabled(),
+        startup.Children.Add(Row(L.T("开机自启", "Launch at Startup"), Toggle(Autostart.IsEnabled(),
             v => { if (v) Autostart.Enable(App.LaunchModeArgs, Config.FastAutostart); else Autostart.Disable(); })));
         startup.Children.Add(Separator());
-        startup.Children.Add(Row("加速自启动", Toggle(Config.FastAutostart, v =>
+        startup.Children.Add(Row(L.T("加速自启动", "Fast Startup"), Toggle(Config.FastAutostart, v =>
         {
             Config.FastAutostart = v;
             Config.Save();
             if (Autostart.IsEnabled()) Autostart.Enable(App.LaunchModeArgs, v); // 就地切换机制
-        }), "用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟）"));
+        }), L.T("用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟）", "Use a scheduled task instead of a Run entry: starts right at logon, skipping the Windows startup-app queue")));
         startup.Children.Add(Separator());
-        startup.Children.Add(Row("菜单在主进程弹出", Toggle(Config.MenuInMainProcess,
+        startup.Children.Add(Row(L.T("菜单在主进程弹出", "Menus in Main Process"), Toggle(Config.MenuInMainProcess,
             v => { Config.MenuInMainProcess = v; Config.Save(); }),
-            "推荐开启；关闭需重启 MacDesk 生效"));
+            L.T("推荐开启；关闭需重启 MacDesk 生效", "Recommended on; turning off takes effect after restarting MacDesk")));
+        startup.Children.Add(Separator());
+        var langBox = new ComboBox { Width = 150, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
+        var langKeys = new[] { "auto", "zh", "en" };
+        langBox.Items.Add(L.T("跟随系统", "Follow System"));
+        langBox.Items.Add("简体中文");
+        langBox.Items.Add("English");
+        langBox.SelectedIndex = Math.Max(0, Array.IndexOf(langKeys, Config.Language));
+        langBox.SelectionChanged += (_, _) =>
+        {
+            if (langBox.SelectedIndex < 0) return;
+            Config.Language = langKeys[langBox.SelectedIndex];
+            Config.Save();
+        };
+        startup.Children.Add(Row(L.T("语言 / Language", "Language / 语言"), langBox,
+            L.T("重启 MacDesk 生效", "Takes effect after restarting MacDesk")));
         p.Children.Add(Card(startup));
 
         var layoutSec = new StackPanel();
-        var importBtn = new Button { Content = "导入…", Padding = new Thickness(14, 4, 14, 4) };
+        var importBtn = new Button { Content = L.T("导入…", "Import…"), Padding = new Thickness(14, 4, 14, 4) };
         importBtn.Click += (_, _) =>
         {
-            if (MessageBox.Show("把原生 Windows 桌面的图标摆放导入 MacDesk？\n同名图标的当前位置会被覆盖。",
-                    "导入原生桌面布局", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (MessageBox.Show(L.T("把原生 Windows 桌面的图标摆放导入 MacDesk？\n同名图标的当前位置会被覆盖。", "Import the native Windows desktop arrangement into MacDesk?\nCurrent positions of icons with the same name will be overwritten."),
+                    L.T("导入原生桌面布局", "Import Native Desktop Layout"), MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             try
             {
                 var native = Interop.NativeDesktopLayout.Read();
                 int n = Interop.NativeDesktopLayout.Import(native, Desktop.Monitors, Desktop.Layout, Desktop.Provider.Enumerate());
                 Desktop.RefreshAll();
                 Desktop.LayoutAllWindows(animated: true);
-                MessageBox.Show($"已导入 {n} 个图标的位置。", "MacDesk");
+                MessageBox.Show(L.T($"已导入 {n} 个图标的位置。", $"Imported positions for {n} icons."), "MacDesk");
             }
-            catch (Exception ex) { MessageBox.Show("导入失败：" + ex.Message, "MacDesk"); }
+            catch (Exception ex) { MessageBox.Show(L.T("导入失败：", "Import failed: ") + ex.Message, "MacDesk"); }
         };
-        layoutSec.Children.Add(Row("导入原生桌面布局", importBtn, "读取隐藏的原生桌面图标位置并应用到 MacDesk"));
+        layoutSec.Children.Add(Row(L.T("导入原生桌面布局", "Import Native Desktop Layout"), importBtn, L.T("读取隐藏的原生桌面图标位置并应用到 MacDesk", "Read the hidden native desktop icon positions and apply them to MacDesk")));
 
         layoutSec.Children.Add(Separator());
-        var exportBtn = new Button { Content = "导出…", Padding = new Thickness(14, 4, 14, 4) };
+        var exportBtn = new Button { Content = L.T("导出…", "Export…"), Padding = new Thickness(14, 4, 14, 4) };
         exportBtn.Click += (_, _) =>
         {
             var dlg = new SaveFileDialog
             {
-                Title = "导出 MacDesk 布局",
-                Filter = "MacDesk 布局 (*.json)|*.json",
+                Title = L.T("导出 MacDesk 布局", "Export MacDesk Layout"),
+                Filter = L.T("MacDesk 布局 (*.json)|*.json", "MacDesk layout (*.json)|*.json"),
                 FileName = $"MacDesk-layout-{DateTime.Now:yyyyMMdd}.json",
             };
             if (dlg.ShowDialog() != true) return;
             try
             {
                 Desktop.Layout.Export(dlg.FileName);
-                MessageBox.Show("布局已导出。", "MacDesk");
+                MessageBox.Show(L.T("布局已导出。", "Layout exported."), "MacDesk");
             }
-            catch (Exception ex) { MessageBox.Show("导出失败：" + ex.Message, "MacDesk"); }
+            catch (Exception ex) { MessageBox.Show(L.T("导出失败：", "Export failed: ") + ex.Message, "MacDesk"); }
         };
-        layoutSec.Children.Add(Row("导出布局", exportBtn, "把当前图标布局存成文件（换机/重装时导入恢复）"));
+        layoutSec.Children.Add(Row(L.T("导出布局", "Export Layout"), exportBtn, L.T("把当前图标布局存成文件（换机/重装时导入恢复）", "Save the current icon layout to a file (import it after switching machines or reinstalling)")));
 
         layoutSec.Children.Add(Separator());
-        var importLayoutBtn = new Button { Content = "导入…", Padding = new Thickness(14, 4, 14, 4) };
+        var importLayoutBtn = new Button { Content = L.T("导入…", "Import…"), Padding = new Thickness(14, 4, 14, 4) };
         importLayoutBtn.Click += (_, _) =>
         {
             var dlg = new OpenFileDialog
             {
-                Title = "导入 MacDesk 布局",
-                Filter = "MacDesk 布局 (*.json)|*.json|所有文件 (*.*)|*.*",
+                Title = L.T("导入 MacDesk 布局", "Import MacDesk Layout"),
+                Filter = L.T("MacDesk 布局 (*.json)|*.json|所有文件 (*.*)|*.*", "MacDesk layout (*.json)|*.json|All files (*.*)|*.*"),
             };
             if (dlg.ShowDialog() != true) return;
-            if (MessageBox.Show("导入将替换当前布局（当前布局会先自动备份）。\n本机不存在的项目会显示为问号占位，可右键移除。",
-                    "导入布局", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+            if (MessageBox.Show(L.T("导入将替换当前布局（当前布局会先自动备份）。\n本机不存在的项目会显示为问号占位，可右键移除。", "Importing replaces the current layout (it is backed up automatically first).\nItems that do not exist on this machine appear as question-mark placeholders you can remove."),
+                    L.T("导入布局", "Import Layout"), MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
             if (Desktop.Layout.TryImport(dlg.FileName))
             {
                 Desktop.OnLayoutImported();
-                MessageBox.Show("布局已导入。", "MacDesk");
+                MessageBox.Show(L.T("布局已导入。", "Layout imported."), "MacDesk");
             }
             else
-                MessageBox.Show("导入失败：文件不是有效的 MacDesk 布局。当前布局未受影响。", "MacDesk",
+                MessageBox.Show(L.T("导入失败：文件不是有效的 MacDesk 布局。当前布局未受影响。", "Import failed: not a valid MacDesk layout file. The current layout is untouched."), "MacDesk",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
         };
-        layoutSec.Children.Add(Row("导入布局", importLayoutBtn, "从导出的布局文件恢复图标摆放"));
+        layoutSec.Children.Add(Row(L.T("导入布局", "Import Layout"), importLayoutBtn, L.T("从导出的布局文件恢复图标摆放", "Restore icon arrangement from an exported layout file")));
 
         p.Children.Add(Card(layoutSec));
 
         var advanced = new StackPanel();
-        advanced.Children.Add(Row("显示原生桌面图标", Toggle(Interop.DesktopLayer.NativeIconsVisible,
+        advanced.Children.Add(Row(L.T("显示原生桌面图标", "Show Native Desktop Icons"), Toggle(Interop.DesktopLayer.NativeIconsVisible,
             v => Interop.DesktopLayer.SetNativeIconsVisible(v)),
-            "调试用：原生图标在 MacDesk 层下面，当前不透明背景下开了也看不见"));
+            L.T("调试用：原生图标在 MacDesk 层下面，当前不透明背景下开了也看不见", "Debug: native icons sit under the MacDesk layer and stay hidden behind the opaque background")));
         advanced.Children.Add(Separator());
         var quitBtn = new Button
         {
-            Content = "退出 MacDesk",
+            Content = L.T("退出 MacDesk", "Quit MacDesk"),
             Padding = new Thickness(14, 4, 14, 4),
             Foreground = DangerFg,
         };
         quitBtn.Click += (_, _) => App.BeginUserQuit();
-        advanced.Children.Add(Row("退出", quitBtn, "还原原生桌面图标并停止 MacDesk（快捷键 Ctrl+Alt+Q）"));
+        advanced.Children.Add(Row(L.T("退出", "Quit"), quitBtn, L.T("还原原生桌面图标并停止 MacDesk（快捷键 Ctrl+Alt+Q）", "Restore the native desktop icons and stop MacDesk (hotkey Ctrl+Alt+Q)")));
         p.Children.Add(Card(advanced));
 
         return p;
@@ -498,7 +520,7 @@ internal sealed class SettingsWindow : Window
 
     private UIElement BuildAppearance()
     {
-        var p = Page("外观");
+        var p = Page(L.T("外观", "Appearance"));
 
         var sec = new StackPanel();
         var palette = new StackPanel { Orientation = Orientation.Horizontal };
@@ -531,32 +553,32 @@ internal sealed class SettingsWindow : Window
             }
         }
         Rebuild();
-        sec.Children.Add(Row("强调色", palette, "选中标签与框选的颜色，即时生效"));
+        sec.Children.Add(Row(L.T("强调色", "Accent Color"), palette, L.T("选中标签与框选的颜色，即时生效", "Color of selected labels and the marquee; applies immediately")));
         p.Children.Add(Card(sec));
 
         var wall = new StackPanel();
-        wall.Children.Add(Row("动态壁纸（Wallpaper Engine）", Toggle(Config.DynamicWallpaper, v =>
+        wall.Children.Add(Row(L.T("动态壁纸（Wallpaper Engine）", "Live Wallpaper (Wallpaper Engine)"), Toggle(Config.DynamicWallpaper, v =>
         {
             Config.DynamicWallpaper = v;
             Config.Save();
             foreach (var w in Desktop.Windows) w.ApplyWallpaperMode();
-        }), "检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。"));
+        }), L.T("检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。", "When Wallpaper Engine is detected, its live wallpaper is adopted into the MacDesk desktop layer (native rendering, zero extra cost).\nWithout Wallpaper Engine running this has no effect; the system static wallpaper is shown.")));
         wall.Children.Add(Separator());
-        wall.Children.Add(Row("使用动态壁纸时禁用图标阴影", Toggle(Config.DynamicNoShadows, v =>
+        wall.Children.Add(Row(L.T("使用动态壁纸时禁用图标阴影", "Disable Icon Shadows with Live Wallpaper"), Toggle(Config.DynamicNoShadows, v =>
         {
             Config.DynamicNoShadows = v;
             Config.Save();
             foreach (var w in Desktop.Windows) w.RefreshDynamicPerf();
-        }), "动态壁纸下图标层改走软件渲染，阴影是性能大头。推荐低配机保持开启；显卡强可关闭保留阴影"));
+        }), L.T("动态壁纸下图标层改走软件渲染，阴影是性能大头。推荐低配机保持开启；显卡强可关闭保留阴影", "With live wallpaper the icon layer is software-rendered and shadows dominate the frame cost. Keep on for low-end machines; turn off to keep shadows on strong GPUs")));
         wall.Children.Add(Separator());
-        wall.Children.Add(Row("使用动态壁纸时禁用动画", Toggle(Config.DynamicNoAnimations, v =>
+        wall.Children.Add(Row(L.T("使用动态壁纸时禁用动画", "Disable Animations with Live Wallpaper"), Toggle(Config.DynamicNoAnimations, v =>
         {
             Config.DynamicNoAnimations = v;
             Config.Save();
-        }), "展开叠放、整理等布局动画改为瞬移，低配机的帧率保底选项"));
+        }), L.T("展开叠放、整理等布局动画改为瞬移，低配机的帧率保底选项", "Layout animations (stack expand, clean up) become instant moves - a frame-rate floor for low-end machines")));
         wall.Children.Add(Separator());
-        wall.Children.Add(Row("静态壁纸", new TextBlock { Text = "跟随系统", Foreground = Subtle, FontSize = 13 },
-            "在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）"));
+        wall.Children.Add(Row(L.T("静态壁纸", "Static Wallpaper"), new TextBlock { Text = L.T("跟随系统", "Follows System"), Foreground = Subtle, FontSize = 13 },
+            L.T("在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）", "Change wallpaper in Windows Personalization; MacDesk follows automatically (per-monitor wallpapers and fit modes included)")));
         p.Children.Add(Card(wall));
 
         return p;
@@ -566,7 +588,7 @@ internal sealed class SettingsWindow : Window
 
     private UIElement BuildMenuPage()
     {
-        var p = Page("右键菜单");
+        var p = Page(L.T("右键菜单", "Context Menu"));
         // 每次建页都新建控件：字段单例会滞留在上一次页面的可视树里，重挂载抛
         // "already the logical child" 被兜底吞掉 → 页面点不进去（机主实测 bug）
         var blacklist = new ListBox { Height = 150, BorderThickness = new Thickness(0), Background = FieldBg, Foreground = TextFg };
@@ -579,7 +601,7 @@ internal sealed class SettingsWindow : Window
         var bl = new StackPanel();
         bl.Children.Add(new TextBlock
         {
-            Text = "屏蔽菜单项：右键菜单里文本包含以下任一子串的项会被移除（不分大小写，下次弹菜单生效）。",
+            Text = L.T("屏蔽菜单项：右键菜单里文本包含以下任一子串的项会被移除（不分大小写，下次弹菜单生效）。", "Blocked menu items: context-menu entries whose text contains any of these substrings are removed (case-insensitive, applies to the next menu)."),
             TextWrapping = TextWrapping.Wrap,
             FontSize = 12,
             Foreground = Subtle,
@@ -594,7 +616,7 @@ internal sealed class SettingsWindow : Window
 
         var pickRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
         var pick = new ComboBox { Margin = new Thickness(0, 0, 6, 0), Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
-        var pickBtn = new Button { Content = "屏蔽该项", Width = 88, Padding = new Thickness(0, 3, 0, 3) };
+        var pickBtn = new Button { Content = L.T("屏蔽该项", "Block Item"), Width = 88, Padding = new Thickness(0, 3, 0, 3) };
         DockPanel.SetDock(pickBtn, Dock.Right);
         pickRow.Children.Add(pickBtn);
         pickRow.Children.Add(pick);
@@ -610,7 +632,7 @@ internal sealed class SettingsWindow : Window
 
         var addRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
         var input = new TextBox { Margin = new Thickness(0, 0, 6, 0), Padding = new Thickness(2), Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
-        var addBtn = new Button { Content = "添加", Width = 64, Padding = new Thickness(0, 3, 0, 3) };
+        var addBtn = new Button { Content = L.T("添加", "Add"), Width = 64, Padding = new Thickness(0, 3, 0, 3) };
         DockPanel.SetDock(addBtn, Dock.Right);
         addRow.Children.Add(addBtn);
         addRow.Children.Add(input);
@@ -618,7 +640,7 @@ internal sealed class SettingsWindow : Window
 
         var delBtn = new Button
         {
-            Content = "删除选中",
+            Content = L.T("删除选中", "Remove Selected"),
             Width = 88,
             Padding = new Thickness(0, 3, 0, 3),
             Margin = new Thickness(0, 6, 0, 10),
@@ -658,7 +680,7 @@ internal sealed class SettingsWindow : Window
 
     private UIElement BuildAbout()
     {
-        var p = Page("关于");
+        var p = Page(L.T("关于", "About"));
 
         var about = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 14, 0, 6) };
         try
@@ -680,7 +702,7 @@ internal sealed class SettingsWindow : Window
         });
         about.Children.Add(new TextBlock
         {
-            Text = $"版本 {UpdateCheck.CurrentVersion}",
+            Text = L.T($"版本 {UpdateCheck.CurrentVersion}", $"Version {UpdateCheck.CurrentVersion}"),
             FontSize = 12,
             Foreground = Subtle,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -688,7 +710,7 @@ internal sealed class SettingsWindow : Window
         });
         about.Children.Add(new TextBlock
         {
-            Text = "mac 式 Windows 桌面图标层",
+            Text = L.T("mac 式 Windows 桌面图标层", "A macOS-style desktop icon layer for Windows"),
             FontSize = 13,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 10, 0, 0),
@@ -703,7 +725,7 @@ internal sealed class SettingsWindow : Window
         });
         about.Children.Add(new TextBlock
         {
-            Text = "无后端 · 无遥测 · 除手动检查更新外不联网",
+            Text = L.T("无后端 · 无遥测 · 除手动检查更新外不联网", "No backend · No telemetry · Only goes online for manual update checks"),
             FontSize = 11,
             Foreground = Subtle,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -713,7 +735,7 @@ internal sealed class SettingsWindow : Window
         var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
         var gh = new Button { Content = "GitHub", Padding = new Thickness(16, 5, 16, 5), Margin = new Thickness(0, 0, 10, 0) };
         gh.Click += (_, _) => OpenUrl("https://github.com/Nishikinonakai/MacDesk");
-        var upd = new Button { Content = "检查更新", Padding = new Thickness(16, 5, 16, 5) };
+        var upd = new Button { Content = L.T("检查更新", "Check for Updates"), Padding = new Thickness(16, 5, 16, 5) };
         var status = new TextBlock
         {
             FontSize = 12, Foreground = Subtle,
@@ -724,28 +746,28 @@ internal sealed class SettingsWindow : Window
         upd.Click += async (_, _) =>
         {
             upd.IsEnabled = false;
-            status.Text = "检查中…";
+            status.Text = L.T("检查中…", "Checking…");
             var (has, msg, url, tag) = await UpdateCheck.Run();
             status.Text = msg;
             if (!has || tag == null) { upd.IsEnabled = true; return; }
-            var r = MessageBox.Show(msg + "\n\n是 = 自动下载并安装（装完自动重启 MacDesk）\n否 = 打开下载页手动更新",
-                "MacDesk 更新", MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
+            var r = MessageBox.Show(msg + L.T("\n\n是 = 自动下载并安装（装完自动重启 MacDesk）\n否 = 打开下载页手动更新", "\n\nYes = download and install automatically (MacDesk restarts when done)\nNo = open the download page for a manual update"),
+                L.T("MacDesk 更新", "MacDesk Update"), MessageBoxButton.YesNoCancel, MessageBoxImage.Information);
             if (r == MessageBoxResult.No && url != null) OpenUrl(url);
             else if (r == MessageBoxResult.Yes)
             {
                 try
                 {
-                    string setup = await UpdateCheck.DownloadSetup(tag, p => status.Text = $"下载更新… {p}%");
-                    status.Text = "安装中…（MacDesk 将自动重启）";
+                    string setup = await UpdateCheck.DownloadSetup(tag, p => status.Text = L.T($"下载更新… {p}%", $"Downloading update… {p}%"));
+                    status.Text = L.T("安装中…（MacDesk 将自动重启）", "Installing… (MacDesk will restart automatically)");
                     // 安装器会 --quit 我们 → 还原原生图标 → 换文件 → /RELAUNCH 拉起新版本
                     System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(setup, "/VERYSILENT /RELAUNCH=1")
                     { UseShellExecute = true });
                 }
-                catch (Exception ex) { status.Text = "下载失败：" + ex.Message; }
+                catch (Exception ex) { status.Text = L.T("下载失败：", "Download failed: ") + ex.Message; }
             }
             upd.IsEnabled = true;
         };
-        var diag = new Button { Content = "导出诊断包…", Padding = new Thickness(16, 5, 16, 5), Margin = new Thickness(10, 0, 0, 0) };
+        var diag = new Button { Content = L.T("导出诊断包…", "Export Diagnostics…"), Padding = new Thickness(16, 5, 16, 5), Margin = new Thickness(10, 0, 0, 0) };
         diag.Click += (_, _) => ExportDiagnostics();
         btns.Children.Add(gh);
         btns.Children.Add(upd);
@@ -763,18 +785,24 @@ internal sealed class SettingsWindow : Window
     private static void ExportDiagnostics()
     {
         if (MessageBox.Show(
-                "诊断包用于向开发者反馈问题，将打包以下本机文件：\n\n" +
-                "• 运行日志（含桌面文件名、显示器型号等使用痕迹）\n" +
-                "• 设置 settings.json\n" +
-                "• 布局档 layout.json（桌面文件名与位置）\n" +
-                "• 环境摘要（系统版本、显示器、MacDesk 版本）\n\n" +
-                "不含任何文件内容，也不会自动上传——zip 保存在你选的位置，\n发送前可自行检查删改。继续导出？",
-                "导出诊断包", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                L.T("诊断包用于向开发者反馈问题，将打包以下本机文件：\n\n" +
+                    "• 运行日志（含桌面文件名、显示器型号等使用痕迹）\n" +
+                    "• 设置 settings.json\n" +
+                    "• 布局档 layout.json（桌面文件名与位置）\n" +
+                    "• 环境摘要（系统版本、显示器、MacDesk 版本）\n\n" +
+                    "不含任何文件内容，也不会自动上传——zip 保存在你选的位置，\n发送前可自行检查删改。继续导出？",
+                    "The diagnostics bundle is for reporting problems to the developer. It packages these local files:\n\n" +
+                    "• Run logs (contain traces like desktop file names and monitor models)\n" +
+                    "• settings.json\n" +
+                    "• layout.json (desktop file names and positions)\n" +
+                    "• Environment summary (OS version, monitors, MacDesk version)\n\n" +
+                    "No file contents are included and nothing is uploaded - the zip is saved where you choose,\nreview or edit it before sending. Export now?"),
+                L.T("导出诊断包", "Export Diagnostics"), MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
         var dlg = new SaveFileDialog
         {
             FileName = $"MacDesk-diagnostics-{DateTime.Now:yyyyMMdd-HHmm}.zip",
-            Filter = "Zip 压缩包|*.zip",
+            Filter = L.T("Zip 压缩包|*.zip", "Zip archive|*.zip"),
         };
         if (dlg.ShowDialog() != true) return;
         try
@@ -806,9 +834,9 @@ internal sealed class SettingsWindow : Window
                     w.WriteLine($"Monitor: {m.Key}{(m.IsPrimary ? " (primary)" : "")} " +
                                 $"({m.Physical.Left},{m.Physical.Top}) {m.Physical.Width}x{m.Physical.Height} dpi={m.Dpi}");
             }
-            MessageBox.Show("诊断包已保存：\n" + dlg.FileName, "MacDesk");
+            MessageBox.Show(L.T("诊断包已保存：\n", "Diagnostics saved:\n") + dlg.FileName, "MacDesk");
         }
-        catch (Exception ex) { MessageBox.Show("导出失败：" + ex.Message, "MacDesk"); }
+        catch (Exception ex) { MessageBox.Show(L.T("导出失败：", "Export failed: ") + ex.Message, "MacDesk"); }
     }
 
     private static void OpenUrl(string url)

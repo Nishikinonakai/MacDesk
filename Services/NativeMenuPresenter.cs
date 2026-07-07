@@ -176,57 +176,57 @@ internal static class NativeMenuPresenter
             return new()
             {
                 Sep(),
-                Cmd(ID_STACKS, "使用叠放", true),
+                Cmd(ID_STACKS, L.T("使用叠放", "Use Stacks"), true),
                 new MenuSnapshot.Item
                 {
-                    Text = "分组依据",
+                    Text = L.T("分组依据", "Group Stacks By"),
                     Children = new List<MenuSnapshot.Item>
                     {
-                        Cmd(ID_GROUP_KIND, "类型", cfg.StackGroupBy == "kind"),
-                        Cmd(ID_GROUP_DATE, "修改日期", cfg.StackGroupBy == "date"),
-                        Cmd(ID_GROUP_SIZE, "大小", cfg.StackGroupBy == "size"),
+                        Cmd(ID_GROUP_KIND, L.T("类型", "Kind"), cfg.StackGroupBy == "kind"),
+                        Cmd(ID_GROUP_DATE, L.T("修改日期", "Date Modified"), cfg.StackGroupBy == "date"),
+                        Cmd(ID_GROUP_SIZE, L.T("大小", "Size"), cfg.StackGroupBy == "size"),
                     },
                 },
                 Sep(),
-                Cmd(ID_PERSONALIZE, "更换壁纸…"),
-                Cmd(ID_SETTINGS, "MacDesk 设置…"),
+                Cmd(ID_PERSONALIZE, L.T("更换壁纸…", "Change Wallpaper…")),
+                Cmd(ID_SETTINGS, L.T("MacDesk 设置…", "MacDesk Settings…")),
             };
         return new()
         {
             Sep(),
-            Cmd(ID_STACKS, "使用叠放"),
+            Cmd(ID_STACKS, L.T("使用叠放", "Use Stacks")),
             new MenuSnapshot.Item
             {
-                Text = "排序方式",
+                Text = L.T("排序方式", "Sort By"),
                 Children = new List<MenuSnapshot.Item>
                 {
-                    Cmd(ID_FREE, "无（自由摆放）", cfg.FreePlacement),
+                    Cmd(ID_FREE, L.T("无（自由摆放）", "None (Free Placement)"), cfg.FreePlacement),
                     Sep(),
-                    Cmd(ID_SORT_NAME, "名称"), Cmd(ID_SORT_DATE, "修改日期"),
-                    Cmd(ID_SORT_SIZE, "大小"), Cmd(ID_SORT_KIND, "类型"),
+                    Cmd(ID_SORT_NAME, L.T("名称", "Name")), Cmd(ID_SORT_DATE, L.T("修改日期", "Date Modified")),
+                    Cmd(ID_SORT_SIZE, L.T("大小", "Size")), Cmd(ID_SORT_KIND, L.T("类型", "Kind")),
                 },
             },
-            Cmd(ID_ARRANGE, "按 mac 式网格整理"),
-            Cmd(ID_UNDO, "撤销上次整理"),
+            Cmd(ID_ARRANGE, L.T("按 mac 式网格整理", "Clean Up (mac-style Grid)")),
+            Cmd(ID_UNDO, L.T("撤销上次整理", "Undo Clean Up")),
             Sep(),
-            Cmd(ID_PERSONALIZE, "更换壁纸…"),
-            Cmd(ID_SETTINGS, "MacDesk 设置…"),
+            Cmd(ID_PERSONALIZE, L.T("更换壁纸…", "Change Wallpaper…")),
+            Cmd(ID_SETTINGS, L.T("MacDesk 设置…", "MacDesk Settings…")),
         };
     }
 
     /// <summary>降级文件菜单（探针判定该类型原生菜单必崩时）。动词与旧 host 版一致。</summary>
     public static List<MenuSnapshot.Item> DegradedFileItems(string[] paths)
     {
-        var items = new List<MenuSnapshot.Item> { Cmd(ID_D_OPEN, "打开") };
-        if (paths.Length == 1 && !paths[0].StartsWith("::")) items.Add(Cmd(ID_D_OPENWITH, "打开方式…"));
+        var items = new List<MenuSnapshot.Item> { Cmd(ID_D_OPEN, L.T("打开", "Open")) };
+        if (paths.Length == 1 && !paths[0].StartsWith("::")) items.Add(Cmd(ID_D_OPENWITH, L.T("打开方式…", "Open With…")));
         items.Add(Sep());
-        items.Add(Cmd(ID_D_CUT, "剪切"));
-        items.Add(Cmd(ID_D_COPY, "复制"));
+        items.Add(Cmd(ID_D_CUT, L.T("剪切", "Cut")));
+        items.Add(Cmd(ID_D_COPY, L.T("复制", "Copy")));
         items.Add(Sep());
-        if (paths.Length == 1) items.Add(Cmd(ID_D_RENAME, "重命名"));
-        items.Add(Cmd(ID_D_DELETE, "删除"));
+        if (paths.Length == 1) items.Add(Cmd(ID_D_RENAME, L.T("重命名", "Rename")));
+        items.Add(Cmd(ID_D_DELETE, L.T("删除", "Delete")));
         items.Add(Sep());
-        items.Add(Cmd(ID_D_PROPS, "属性"));
+        items.Add(Cmd(ID_D_PROPS, L.T("属性", "Properties")));
         return items;
     }
 
@@ -245,7 +245,7 @@ internal static class NativeMenuPresenter
         var real = paths.Count(p => !p.StartsWith("::"));
         if (real < 2) return;
         items.Add(Sep());
-        items.Add(Cmd(ID_NEWFOLDER_SEL, $"用所选项目新建文件夹（{real} 项）"));
+        items.Add(Cmd(ID_NEWFOLDER_SEL, L.T($"用所选项目新建文件夹（{real} 项）", $"New Folder with Selection ({real} Items)")));
     }
 
     private static readonly Lazy<string?> LeProcPath = new(() =>
@@ -293,7 +293,7 @@ internal static class NativeMenuPresenter
             }
             _leTarget = target;
             items.Add(Sep());
-            items.Add(Cmd(ID_LE_RUN, "用 Locale Emulator 运行"));
+            items.Add(Cmd(ID_LE_RUN, L.T("用 Locale Emulator 运行", "Run with Locale Emulator")));
         }
         catch (Exception ex) { Log.Write("LE item skipped: " + ex.Message); }
     }

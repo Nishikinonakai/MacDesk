@@ -77,6 +77,7 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        Services.L.Init(Services.Settings.Load().Language); // 所有进程模式最早解析语言
         HideNativeIcons = e.Args.Contains("--hide-native");
         Transparent = e.Args.Contains("--transparent"); // 实验：WPF 分层子窗口大概率不渲染
         NoChildStyle = e.Args.Contains("--no-child");
@@ -214,7 +215,8 @@ public partial class App : Application
         {
             // 恢复/交接拉起的实例撞上活体 = 竞态残留，安静退让别弹框（用户手动双开才提示）
             if (!LaunchedByRecovery)
-                MessageBox.Show("MacDesk 已在运行。用 MacDesk.exe --quit 退出。", "MacDesk");
+                MessageBox.Show(Services.L.T("MacDesk 已在运行。用 MacDesk.exe --quit 退出。",
+                    "MacDesk is already running. Use MacDesk.exe --quit to exit."), "MacDesk");
             Shutdown();
             return;
         }

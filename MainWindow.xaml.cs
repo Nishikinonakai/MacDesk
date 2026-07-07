@@ -241,7 +241,7 @@ public partial class MainWindow : Window
                 // 20s 都等不到 shell = 真的没有桌面可挂 → 清洁退出并停掉看门狗（重启也没用）
                 Log.Write("attach FAILED after retries; giving up");
                 if (!App.LaunchedByRecovery)
-                    MessageBox.Show("挂载桌面层失败（找不到 Progman/DefView）。", "MacDesk");
+                    MessageBox.Show(L.T("挂载桌面层失败（找不到 Progman/DefView）。", "Failed to attach to the desktop layer (Progman/DefView not found)."), "MacDesk");
                 App.BeginUserQuit();
                 return;
             }
@@ -592,7 +592,7 @@ public partial class MainWindow : Window
             Width = CellW,
             Child = stack,
             Background = Brushes.Transparent,
-            ToolTip = new ToolTip { Content = $"{name}\n此项目在本机不存在（来自导入的布局）" },
+            ToolTip = new ToolTip { Content = $"{name}\n{L.T("此项目在本机不存在（来自导入的布局）", "This item does not exist on this machine (from an imported layout)")}" },
         };
         string n = name;
         root.MouseLeftButtonDown += (_, e) => e.Handled = true; // 别漏给画布启动框选
@@ -602,7 +602,7 @@ public partial class MainWindow : Window
             var pt = PointToScreen(e.GetPosition(this));
             PrepareForMenu();
             uint cmd = NativeMenuPresenter.Track(_hwnd,
-                new List<MenuSnapshot.Item> { new() { Id = ID_MISSING_REMOVE, Text = "从布局中移除" } },
+                new List<MenuSnapshot.Item> { new() { Id = ID_MISSING_REMOVE, Text = L.T("从布局中移除", "Remove from Layout") } },
                 (int)pt.X, (int)pt.Y);
             if (cmd == ID_MISSING_REMOVE)
             {
@@ -971,14 +971,14 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, PileVisual> _stackPiles = new();
     private string? _expandedStack;
 
-    private const string OtherKind = "其他"; // 混杂兜底分组名（仅"类型"分组会产生）
+    private static readonly string OtherKind = L.T("其他", "Other"); // 混杂兜底分组名（仅"类型"分组会产生）
 
     private static readonly (string Kind, string[] Exts)[] StackKindTable =
     {
-        ("应用程序", new[] { ".lnk", ".url", ".exe", ".appref-ms" }),
-        ("图片", new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".ico", ".svg" }),
-        ("文档", new[] { ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".csv" }),
-        ("压缩包", new[] { ".zip", ".7z", ".rar", ".gz", ".tar", ".iso" }),
+        (L.T("应用程序", "Applications"), new[] { ".lnk", ".url", ".exe", ".appref-ms" }),
+        (L.T("图片", "Images"), new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".ico", ".svg" }),
+        (L.T("文档", "Documents"), new[] { ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".csv" }),
+        (L.T("压缩包", "Archives"), new[] { ".zip", ".7z", ".rar", ".gz", ".tar", ".iso" }),
     };
 
     private static string StackKindOf(DesktopEntry en)
@@ -993,8 +993,8 @@ public partial class MainWindow : Window
     // 与"类型"不同，这两种分组下每一档都是真实文件的正常聚合，没有"其他"式的混杂兜底：
     // UpdatePileVisual 只在 StackGroupBy=="kind" 且档名==OtherKind 时才退化成语义占位。
 
-    private static readonly string[] DateBuckets = { "今天", "昨天", "本周", "本月", "更早" };
-    private static readonly string[] SizeBuckets = { "小型", "中型", "大型", "超大型" };
+    private static readonly string[] DateBuckets = { L.T("今天", "Today"), L.T("昨天", "Yesterday"), L.T("本周", "This Week"), L.T("本月", "This Month"), L.T("更早", "Earlier") };
+    private static readonly string[] SizeBuckets = { L.T("小型", "Small"), L.T("中型", "Medium"), L.T("大型", "Large"), L.T("超大型", "Huge") };
 
     private static string StackDateBucketOf(DesktopEntry en)
     {
@@ -1080,7 +1080,7 @@ public partial class MainWindow : Window
             var pile = GetOrCreatePile(kind);
             bool expanded = _expandedStack == kind;
             UpdatePileVisual(pile, kind, members, expanded);
-            pile.Root.ToolTip = $"{kind} · {members.Count} 项";
+            pile.Root.ToolTip = $"{kind} · {members.Count}{L.T(" 项", members.Count == 1 ? " item" : " items")}";
             pile.LabelPlate.Background = expanded ? Accent.LabelBrush : Brushes.Transparent;
 
             var (l, t) = Take();
@@ -1326,7 +1326,7 @@ public partial class MainWindow : Window
         pile.Expanded = expanded;
         pile.ScrubIndex = -1;
 
-        pile.Label.Text = $"{kind}\n{members.Count} 项";
+        pile.Label.Text = $"{kind}\n{members.Count}{L.T(" 项", members.Count == 1 ? " item" : " items")}";
     }
 
     /// <summary>只在成员路径变化时才重新取图——LayoutStacks 每次重排都会跑到这里，
@@ -2144,11 +2144,11 @@ public partial class MainWindow : Window
         try
         {
             string baseDir = DesktopItemProvider.UserDesktop;
-            string name = "新建文件夹";
+            string name = L.T("新建文件夹", "New Folder");
             string path = Path.Combine(baseDir, name);
             for (int n = 2; Directory.Exists(path) || File.Exists(path); n++)
             {
-                name = $"新建文件夹 ({n})";
+                name = L.T($"新建文件夹 ({n})", $"New Folder ({n})");
                 path = Path.Combine(baseDir, name);
             }
             // 项目搬走后文件夹坐第一个选中项的位置（Finder 行为）
@@ -2175,11 +2175,11 @@ public partial class MainWindow : Window
         try
         {
             string baseDir = DesktopItemProvider.UserDesktop;
-            string name = "新建文件夹";
+            string name = L.T("新建文件夹", "New Folder");
             string path = Path.Combine(baseDir, name);
             for (int n = 2; Directory.Exists(path) || File.Exists(path); n++)
             {
-                name = $"新建文件夹 ({n})";
+                name = L.T($"新建文件夹 ({n})", $"New Folder ({n})");
                 path = Path.Combine(baseDir, name);
             }
             // 预归属到本屏第一个空格（否则新文件夹默认落到主屏）；自由摆放按脚印避让

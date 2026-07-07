@@ -64,9 +64,11 @@ internal static class Desktop
                 {
                     var native = Interop.NativeDesktopLayout.Read();
                     if (native.Count > 0 && System.Windows.MessageBox.Show(
-                            $"欢迎使用 MacDesk！\n\n检测到桌面上已有 {native.Count} 个图标。要保留它们现在的摆放吗？\n\n" +
-                            "选择“是”导入现有布局；选择“否”将从整洁的 mac 式右上排列开始。",
-                            "MacDesk 首次启动",
+                            L.T($"欢迎使用 MacDesk！\n\n检测到桌面上已有 {native.Count} 个图标。要保留它们现在的摆放吗？\n\n" +
+                                "选择“是”导入现有布局；选择“否”将从整洁的 mac 式右上排列开始。",
+                                $"Welcome to MacDesk!\n\nFound {native.Count} icons on your desktop. Keep their current arrangement?\n\n" +
+                                "Choose Yes to import the existing layout, or No to start with a clean mac-style top-right flow."),
+                            L.T("MacDesk 首次启动", "MacDesk First Run"),
                             System.Windows.MessageBoxButton.YesNo,
                             System.Windows.MessageBoxImage.Question) == System.Windows.MessageBoxResult.Yes)
                         Interop.NativeDesktopLayout.Import(native, Monitors, Layout, Provider.Enumerate());

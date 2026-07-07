@@ -25,16 +25,16 @@ internal static class UpdateCheck
         {
             string? tag = await LatestTagViaRedirect() ?? await LatestTagViaApi();
             if (tag == null)
-                return (false, "无法访问 GitHub（网络问题或接口限流），请稍后再试", null, null);
+                return (false, L.T("无法访问 GitHub（网络问题或接口限流），请稍后再试", "Could not reach GitHub (network issue or rate limit). Try again later."), null, null);
             var latest = ParseVersion(tag);
             var mine = ParseVersion(CurrentVersion);
-            if (latest > mine) return (true, $"发现新版本 {tag}（当前 {CurrentVersion}）", $"{ReleasesPage}/tag/{tag}", tag);
-            return (false, $"已是最新版本（{CurrentVersion}）", null, null);
+            if (latest > mine) return (true, L.T($"发现新版本 {tag}（当前 {CurrentVersion}）", $"New version {tag} available (current {CurrentVersion})"), $"{ReleasesPage}/tag/{tag}", tag);
+            return (false, L.T($"已是最新版本（{CurrentVersion}）", $"You are up to date ({CurrentVersion})"), null, null);
         }
         catch (Exception ex)
         {
             Log.Write("update check failed: " + ex.Message);
-            return (false, "检查更新失败", null, null);
+            return (false, L.T("检查更新失败", "Update check failed"), null, null);
         }
     }
 
