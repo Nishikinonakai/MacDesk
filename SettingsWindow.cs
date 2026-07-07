@@ -147,11 +147,14 @@ internal sealed class SettingsWindow : Window
         _nav.SelectedIndex = 0;
     }
 
-    private static Style NavItemStyle()
+    private Style NavItemStyle()
     {
         var style = new Style(typeof(ListBoxItem));
         style.Setters.Add(new Setter(PaddingProperty, new Thickness(8, 7, 8, 7)));
         style.Setters.Add(new Setter(Control.BackgroundProperty, Brushes.Transparent));
+        // ListBoxItem 是 Control，自带 Foreground 默认值会掐断窗口级 Foreground 的继承链——
+        // 深色下侧栏文本不跟白（机主反馈可读性差）就是这个断点，必须在 item 样式里显式续上
+        style.Setters.Add(new Setter(Control.ForegroundProperty, TextFg));
         style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
         var template = new ControlTemplate(typeof(ListBoxItem));
         var border = new FrameworkElementFactory(typeof(Border), "bd");
@@ -227,13 +230,52 @@ internal sealed class SettingsWindow : Window
         Margin = new Thickness(-16, 0, -16, 0),
     };
 
-    private CheckBox Toggle(bool initial, Action<bool> onChange)
+    /// <summary>macOS 系统设置同款开关（替代原生 CheckBox——深色下不适配且没有 mac 灵魂）：
+    /// 胶囊底 + 白色圆钮，开=强调色/关=灰，160ms 滑动 + 变色动画。</summary>
+    private Border Toggle(bool initial, Action<bool> onChange)
     {
-        var cb = new CheckBox { IsChecked = initial, Foreground = TextFg };
-        if (_dark) cb.Background = ButtonBg; // 原生 CheckBox 只做基础着色，不整套重模板
-        cb.Checked += (_, _) => onChange(true);
-        cb.Unchecked += (_, _) => onChange(false);
-        return cb;
+        const double W = 38, H = 22, Pad = 2;
+        double thumbTravel = W - H; // 圆钮直径 = H - 2*Pad，行程 = 宽 - 高
+        bool on = initial;
+
+        var offBrush = _dark ? Rgb(0x5A, 0x5A, 0x5E) : Rgb(0xD1, 0xD1, 0xD6);
+        static Color OnColor() // LabelBrush 带 0xE6 透明度，开关要不透明版强调色
+        { var c = Accent.LabelBrush.Color; return Color.FromRgb(c.R, c.G, c.B); }
+
+        var thumb = new Border
+        {
+            Width = H - Pad * 2, Height = H - Pad * 2,
+            CornerRadius = new CornerRadius((H - Pad * 2) / 2),
+            Background = Brushes.White,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(Pad, 0, 0, 0),
+            RenderTransform = new TranslateTransform(on ? thumbTravel : 0, 0),
+            Effect = new System.Windows.Media.Effects.DropShadowEffect
+                { BlurRadius = 3, ShadowDepth = 0.5, Opacity = 0.35 },
+        };
+        var pill = new Border
+        {
+            Width = W, Height = H,
+            CornerRadius = new CornerRadius(H / 2),
+            Background = new SolidColorBrush(on ? OnColor() : offBrush.Color),
+            Child = thumb,
+            Cursor = Cursors.Hand,
+        };
+        pill.MouseLeftButtonUp += (_, _) =>
+        {
+            on = !on;
+            var slide = new System.Windows.Media.Animation.DoubleAnimation(
+                on ? thumbTravel : 0, TimeSpan.FromMilliseconds(160))
+            { EasingFunction = new System.Windows.Media.Animation.CubicEase
+                { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } };
+            ((TranslateTransform)thumb.RenderTransform).BeginAnimation(TranslateTransform.XProperty, slide);
+            var tint = new System.Windows.Media.Animation.ColorAnimation(
+                on ? OnColor() : offBrush.Color, TimeSpan.FromMilliseconds(160));
+            ((SolidColorBrush)pill.Background).BeginAnimation(SolidColorBrush.ColorProperty, tint);
+            onChange(on);
+        };
+        return pill;
     }
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));

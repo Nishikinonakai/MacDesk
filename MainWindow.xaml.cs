@@ -726,17 +726,17 @@ public partial class MainWindow : Window
     private sealed class PileVisual
     {
         public Border Root = null!;
-        // 真实内容扇形（后/中/前三层真图标斜向叠放）：非"其他"分组用，front 恒显示，mid/back 按成员数显示
+        // 收起态 = 真实内容扇形（后/中/前三层真图标斜向叠放，含"其他"——macOS 收起的堆一律真图标）
+        public Grid FanGroup = null!;
         public Image IconFront = null!, IconMid = null!, IconBack = null!;
-        // 语义占位（泛用叠层卡片 + 居中展开箭头）："其他"分组用——混杂类型没有单一代表缩略图
-        public Border GenericCard1 = null!, GenericCard2 = null!;
-        public UIElement ChevronBadge = null!;
+        // 展开态 = 语义占位（叠层卡片 + 居中收起箭头）：macOS 展开后原堆位变成"点此收起"按钮
+        public Grid CardGroup = null!;
         public TextBlock Label = null!;
         public Border LabelPlate = null!;
         public string? FrontPath, MidPath, BackPath; // 已加载的真实图标路径缓存，跳过重复取图
-        // hover 刮擦预览（macOS scrub）状态：横向划过堆时前层临时轮换成员图标，移出复位
+        // 刮擦预览（macOS scrub = 悬停 + 滚轮/双指滚动轮换，非鼠标移动）状态
         public List<IconVisual> Members = new();
-        public bool IsGeneric;
+        public bool Expanded;
         public int ScrubIndex = -1; // -1 = 未在刮擦，静息态
         public ImageSource? RestingFrontIcon;
     }
@@ -744,7 +744,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, PileVisual> _stackPiles = new();
     private string? _expandedStack;
 
-    private const string OtherKind = "其他"; // 混杂兜底分组：没有连贯视觉身份，走语义占位而非真实缩略图
+    private const string OtherKind = "其他"; // 混杂兜底分组名（仅"类型"分组会产生）
 
     private static readonly (string Kind, string[] Exts)[] StackKindTable =
     {
@@ -851,37 +851,51 @@ public partial class MainWindow : Window
         {
             var members = groups[kind];
             var pile = GetOrCreatePile(kind);
-            UpdatePileVisual(pile, kind, members);
-            pile.Root.ToolTip = $"{kind} · {members.Count} 项";
             bool expanded = _expandedStack == kind;
+            UpdatePileVisual(pile, kind, members, expanded);
+            pile.Root.ToolTip = $"{kind} · {members.Count} 项";
             pile.LabelPlate.Background = expanded ? Accent.LabelBrush : Brushes.Transparent;
 
             var (l, t) = Take();
             double pl = Math.Round(l), pt = Math.Round(t); // 堆槽位坐标 = 收起成员的停靠点
-            Canvas.SetLeft(pile.Root, pl);
-            Canvas.SetTop(pile.Root, pt);
+            // 堆自己被别的堆展开挤走时也要滑过去——机主反馈：直接瞬移很生硬
+            MoveElement(pile.Root, pl, pt, animated, EaseGlide, GlideMs);
 
             foreach (var m in members)
             {
                 bool wasVisible = m.Root.Visibility == Visibility.Visible;
                 if (expanded)
                 {
-                    // 展开：坐标此刻已停在堆位（见下），从堆位飞向目标格 = 天然"从堆里展开"
+                    // 展开：坐标此刻已停在堆位（见下），从堆位弹出飞向目标格 + 渐显
                     m.Root.Visibility = Visibility.Visible;
                     var (ml, mt) = Take();
-                    MoveIcon(m, ml, mt, animated);
+                    MoveElement(m.Root, ml, mt, animated, EaseSpringOut, ExpandMs);
+                    if (animated && !wasVisible)
+                    {
+                        m.Root.Opacity = 0.2;
+                        FadeTo(m.Root, 1, 200);
+                    }
+                    else
+                    {
+                        ResetOpacity(m.Root); // 可能正处于收起渐隐中被再次点开
+                        if (_cutIcons.Contains(m)) m.Root.Opacity = 0.5;
+                    }
                 }
                 else if (wasVisible)
                 {
-                    // 刚收起（含首次开启叠放）：先飞回堆位，播完动画再 Collapsed——不要瞬间消失
-                    MoveIcon(m, pl, pt, animated);
-                    if (animated) justCollapsing.Add(m);
+                    // 刚收起（含首次开启叠放）：加速吸回堆位，行程后段渐隐，播完才 Collapsed
+                    MoveElement(m.Root, pl, pt, animated, EaseInhale, CollapseMs);
+                    if (animated)
+                    {
+                        FadeTo(m.Root, 0, CollapseMs - 120, 120); // 后 60% 行程里淡出，到位即无形
+                        justCollapsing.Add(m);
+                    }
                     else m.Root.Visibility = Visibility.Collapsed; // 非动画通道（冷启动）：直接落位
                 }
                 else
                 {
                     // 保持收起：坐标静默跟随堆位（堆增减会移动槽位），不触发可见动画
-                    MoveIcon(m, pl, pt, false);
+                    MoveElement(m.Root, pl, pt, false, EaseGlide, GlideMs);
                 }
             }
         }
@@ -895,15 +909,21 @@ public partial class MainWindow : Window
         if (justCollapsing.Count > 0)
         {
             var batch = justCollapsing;
-            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CollapseMs) };
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
-                // 归属用触发时刻的分组函数现算：350ms 窗口内换过分组依据的话，捕获的旧堆名会误判
+                // 归属用触发时刻的分组函数现算：窗口内换过分组依据的话，捕获的旧堆名会误判
                 var (classify, _) = StackGrouping();
                 foreach (var m in batch)
+                {
                     if (Config.UseStacks && _expandedStack != classify(m.Entry))
+                    {
                         m.Root.Visibility = Visibility.Collapsed;
+                        ResetOpacity(m.Root); // 隐藏后归位全显，下次展开从干净状态渐显
+                        if (_cutIcons.Contains(m)) m.Root.Opacity = 0.5; // 剪切半透明态别被冲掉
+                    }
+                }
             };
             timer.Start();
         }
@@ -934,8 +954,13 @@ public partial class MainWindow : Window
         var iconMid = MakePileLayer(53, 0.88, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0, 6, 5, 0), 3, 0.35);
         var iconFront = MakePileLayer(60, 1.0, HorizontalAlignment.Left, VerticalAlignment.Bottom, new Thickness(0), 4, 0.4);
 
-        // 语义占位："其他"这种混杂分组没有连贯的单一缩略图可代表，退回泛用叠层卡片 + 居中展开箭头
-        // （对照 macOS：Other/N items 就是这种通用"一沓文档"图标，不是真实内容）。
+        // 收起态扇形组（三层真图标一体隐显/渐变）
+        var fanGroup = new Grid();
+        fanGroup.Children.Add(iconBack);
+        fanGroup.Children.Add(iconMid);
+        fanGroup.Children.Add(iconFront);
+
+        // 展开态语义占位（macOS：展开后原堆位变成叠层卡片 + 向下箭头 = "点此收起"按钮）
         var card1 = new Border
         {
             Width = 54, Height = 54,
@@ -966,7 +991,10 @@ public partial class MainWindow : Window
             StrokeEndLineCap = PenLineCap.Round,
             StrokeLineJoin = PenLineJoin.Round,
         };
-        var chevronBadge = new Border
+        var cardGroup = new Grid { Opacity = 0, IsHitTestVisible = false }; // 初始收起态：只见扇形
+        cardGroup.Children.Add(card1);
+        cardGroup.Children.Add(card2);
+        cardGroup.Children.Add(new Border
         {
             Width = 34, Height = 34,
             CornerRadius = new CornerRadius(9),
@@ -975,15 +1003,11 @@ public partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 4, 0, 0),
-        };
+        });
 
         var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
-        plate.Children.Add(card1);
-        plate.Children.Add(card2);
-        plate.Children.Add(iconBack);
-        plate.Children.Add(iconMid);
-        plate.Children.Add(iconFront);
-        plate.Children.Add(chevronBadge);
+        plate.Children.Add(fanGroup);
+        plate.Children.Add(cardGroup);
 
         var label = new TextBlock
         {
@@ -1027,25 +1051,21 @@ public partial class MainWindow : Window
         IconCanvas.Children.Add(root);
         var pv = new PileVisual
         {
-            Root = root, IconFront = iconFront, IconMid = iconMid, IconBack = iconBack,
-            GenericCard1 = card1, GenericCard2 = card2, ChevronBadge = chevronBadge,
-            Label = label, LabelPlate = labelPlate,
+            Root = root, FanGroup = fanGroup, IconFront = iconFront, IconMid = iconMid, IconBack = iconBack,
+            CardGroup = cardGroup, Label = label, LabelPlate = labelPlate,
         };
         _stackPiles[kind] = pv;
 
-        // hover 刮擦预览（macOS scrub）：横向划过堆时前层轮换显示成员真实图标，不需要额外
-        // 取图——每个成员桌面图标本就常驻加载了自己的 Image.Source，直接借用。
-        root.MouseMove += (_, e) =>
+        // 刮擦预览（macOS scrub）= 悬停 + 滚轮/双指滚动轮换前层图标（机主纠正：悬停移动
+        // 不该轮换）。零额外取图——成员桌面图标本就常驻加载了 Image.Source，直接借用。
+        root.MouseWheel += (_, e) =>
         {
-            if (pv.IsGeneric || pv.Members.Count < 2) return;
-            double ratio = e.GetPosition(plate).X / plate.Width;
-            int idx = Math.Clamp((int)(ratio * pv.Members.Count), 0, pv.Members.Count - 1);
-            if (idx != pv.ScrubIndex)
-            {
-                pv.ScrubIndex = idx;
-                pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
-            }
-            e.Handled = true;
+            e.Handled = true; // 别让滚轮漏给画布
+            if (pv.Expanded || pv.Members.Count < 2) return;
+            int cur = pv.ScrubIndex == -1 ? 0 : pv.ScrubIndex;
+            int idx = ((cur + (e.Delta < 0 ? 1 : -1)) % pv.Members.Count + pv.Members.Count) % pv.Members.Count;
+            pv.ScrubIndex = idx;
+            pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
         };
         root.MouseLeave += (_, _) =>
         {
@@ -1056,37 +1076,41 @@ public partial class MainWindow : Window
         return pv;
     }
 
-    /// <summary>按分组内容刷新堆的观感：非"其他"用最多 3 个真实成员图标斜向叠放，
-    /// "其他"（混杂无连贯身份）用泛用叠层卡片 + 展开箭头。可见标签改两行"类别\nN 项"
-    /// （对照 macOS "Other / 14 items"，不再只藏在 tooltip 里）。按日期/大小分组时没有
-    /// "其他"式的混杂兜底概念（每一档都是真实文件），恒用真实图标扇形。</summary>
-    private void UpdatePileVisual(PileVisual pile, string kind, List<IconVisual> members)
+    /// <summary>按分组内容与展开态刷新堆的观感（macOS 语义，机主两轮截图对照后定案）：
+    /// 收起 = 最多 3 个真实成员图标斜向叠放（含"其他"——收起的堆一律真图标）；
+    /// 展开 = 原堆位变成叠层卡片 + 收起箭头（语义占位 = "点此收起"按钮）。
+    /// 两态切换带 160ms 交叉渐隐。标签两行"类别\nN 项"。</summary>
+    private void UpdatePileVisual(PileVisual pile, string kind, List<IconVisual> members, bool expanded)
     {
-        bool generic = Config.StackGroupBy == "kind" && kind == OtherKind;
-        pile.GenericCard1.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
-        pile.GenericCard2.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
-        pile.ChevronBadge.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
-
-        pile.IconFront.Visibility = generic ? Visibility.Collapsed : Visibility.Visible;
-        pile.IconMid.Visibility = !generic && members.Count >= 2 ? Visibility.Visible : Visibility.Collapsed;
-        pile.IconBack.Visibility = !generic && members.Count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+        pile.IconMid.Visibility = members.Count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        pile.IconBack.Visibility = members.Count >= 3 ? Visibility.Visible : Visibility.Collapsed;
 
         // 布局刷新可能打断进行中的刮擦：先把前层复位到静息图，否则下面 SetLayerIcon 的
         // 路径缓存命中会跳过重载，把刮擦帧误捕获成新的静息图（此后前层永久卡在错的成员上）
         if (pile.ScrubIndex != -1 && pile.RestingFrontIcon != null)
             pile.IconFront.Source = pile.RestingFrontIcon;
 
-        if (!generic)
-        {
-            SetLayerIcon(pile.IconFront, ref pile.FrontPath, members[0].Entry.Path);
-            if (members.Count >= 2) SetLayerIcon(pile.IconMid, ref pile.MidPath, members[1].Entry.Path);
-            if (members.Count >= 3) SetLayerIcon(pile.IconBack, ref pile.BackPath, members[2].Entry.Path);
-            pile.RestingFrontIcon = pile.IconFront.Source;
-        }
+        SetLayerIcon(pile.IconFront, ref pile.FrontPath, members[0].Entry.Path);
+        if (members.Count >= 2) SetLayerIcon(pile.IconMid, ref pile.MidPath, members[1].Entry.Path);
+        if (members.Count >= 3) SetLayerIcon(pile.IconBack, ref pile.BackPath, members[2].Entry.Path);
+        pile.RestingFrontIcon = pile.IconFront.Source;
 
-        // hover 刮擦预览的状态跟着这次布局刷新：成员列表变了就复位（下次 MouseMove 会按新内容重算）
+        if (expanded != pile.Expanded)
+        {
+            // 扇形 ↔ 收起按钮交叉渐隐；两组常驻可视树（IsHitTestVisible 关掉暗侧防误点）
+            FadeTo(pile.FanGroup, expanded ? 0 : 1, 160);
+            FadeTo(pile.CardGroup, expanded ? 1 : 0, 160);
+        }
+        else
+        {
+            pile.FanGroup.Opacity = expanded ? 0 : 1;
+            pile.CardGroup.Opacity = expanded ? 1 : 0;
+        }
+        pile.FanGroup.IsHitTestVisible = !expanded;
+        pile.CardGroup.IsHitTestVisible = expanded;
+
         pile.Members = members;
-        pile.IsGeneric = generic;
+        pile.Expanded = expanded;
         pile.ScrubIndex = -1;
 
         pile.Label.Text = $"{kind}\n{members.Count} 项";
@@ -1176,26 +1200,56 @@ public partial class MainWindow : Window
         return (col, row);
     }
 
-    private static void MoveIcon(IconVisual iv, double l, double t, bool animated)
+    // ── 动画手感（macOS 观感，Finder 手感调研没有像素级曲线数据，按观感定）──
+    // 通用重排 = 指数缓出（前段快后段极缓，比 CubicEase 柔和得多，接近 mac 的 spring 收尾）；
+    // 堆展开 = 轻微过冲的 BackEase（弹簧"甩出来"的灵魂）；堆收起 = 缓入（加速被吸进堆里）。
+    private static readonly IEasingFunction EaseGlide = new ExponentialEase { EasingMode = EasingMode.EaseOut, Exponent = 5 };
+    private static readonly IEasingFunction EaseSpringOut = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.25 };
+    private static readonly IEasingFunction EaseInhale = new CubicEase { EasingMode = EasingMode.EaseIn };
+    private const int GlideMs = 400, ExpandMs = 430, CollapseMs = 300;
+
+    private static void MoveIcon(IconVisual iv, double l, double t, bool animated) =>
+        MoveElement(iv.Root, l, t, animated, EaseGlide, GlideMs);
+
+    private static void MoveElement(FrameworkElement el, double l, double t, bool animated,
+        IEasingFunction ease, int ms)
     {
         // 落点吸附整数 DIU：亚像素坐标会让整个图标（尤其文字）渲染发糊
         l = Math.Round(l);
         t = Math.Round(t);
-        if (animated && !double.IsNaN(Canvas.GetLeft(iv.Root)))
+        if (animated && !double.IsNaN(Canvas.GetLeft(el)))
         {
-            var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
-            var ax = new DoubleAnimation(l, TimeSpan.FromMilliseconds(350)) { EasingFunction = ease };
-            var ay = new DoubleAnimation(t, TimeSpan.FromMilliseconds(350)) { EasingFunction = ease };
-            iv.Root.BeginAnimation(Canvas.LeftProperty, ax);
-            iv.Root.BeginAnimation(Canvas.TopProperty, ay);
+            var ax = new DoubleAnimation(l, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease };
+            var ay = new DoubleAnimation(t, TimeSpan.FromMilliseconds(ms)) { EasingFunction = ease };
+            el.BeginAnimation(Canvas.LeftProperty, ax);
+            el.BeginAnimation(Canvas.TopProperty, ay);
         }
         else
         {
-            iv.Root.BeginAnimation(Canvas.LeftProperty, null);
-            iv.Root.BeginAnimation(Canvas.TopProperty, null);
-            Canvas.SetLeft(iv.Root, l);
-            Canvas.SetTop(iv.Root, t);
+            el.BeginAnimation(Canvas.LeftProperty, null);
+            el.BeginAnimation(Canvas.TopProperty, null);
+            Canvas.SetLeft(el, l);
+            Canvas.SetTop(el, t);
         }
+    }
+
+    /// <summary>透明度过渡（机主点名的 mac 细节：图标收进堆"即将消失时"要有渐隐，
+    /// 否则到位后突然消失很生硬；展开反向渐显）。delayMs 让渐隐集中在行程后段。</summary>
+    private static void FadeTo(FrameworkElement el, double to, int ms, int delayMs = 0)
+    {
+        var a = new DoubleAnimation(to, TimeSpan.FromMilliseconds(ms))
+        {
+            BeginTime = TimeSpan.FromMilliseconds(delayMs),
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseInOut },
+        };
+        el.BeginAnimation(OpacityProperty, a);
+    }
+
+    /// <summary>清掉透明度动画并复位到全显——展开被收起中的成员、或隐藏完成后归位用。</summary>
+    private static void ResetOpacity(FrameworkElement el)
+    {
+        el.BeginAnimation(OpacityProperty, null);
+        el.Opacity = 1;
     }
 
     // ── 选择模型 ──────────────────────────────────────────────
