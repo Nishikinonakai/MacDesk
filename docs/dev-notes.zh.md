@@ -312,3 +312,19 @@ macOS 钥匙串里迁移过来的 GitHub OAuth token（`security find-internet-p
 **backlog 补充**：v2 使深色菜单跟随（uxtheme #135/#136）变trivial——菜单在主进程，
 SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可见，未启用）；
 菜单序列化也为"设置 GUI 菜单项屏蔽"铺平了路（数据树在手，过滤即所得）。
+
+## 2026-07-07 早：种子避让修复 + Finder 式标签中间省略（真机验证）
+
+- **新建文件叠图标 bug（昨夜发现）修复**：LayoutAll 自由摆放分支从不填充 `placed`，
+  新图标右上列流对空集合避让 → 必然叠在右上角已有图标上。修 = `MarkFootprint`：自由
+  摆放的图标不吸格、可跨格，把显示脚印（CellW×CellH）盖到的所有格子标记为已占（列向/
+  行向区间重叠判定，边界外跳过）；Ctrl+Shift+N 新建文件夹的占位集合同步换 `OccupiedCellsForSeeding`
+  （自由=脚印、网格=目标格）。真机：连建两个文件依次落 New Folder 下方空格，零叠加。
+- **标签中间省略保扩展名**（Finder 手感调研项）：两行装不下时 `TruncateLabel` 用
+  FormattedText（同字体/Display 模式/同宽）测量 + 二分最长前缀，渲染成"前缀…尾3字符+扩展名"
+  （无扩展名/伪扩展名>8字符按纯文本截）。TextBlock 保留 CharacterEllipsis 作测量偏差兜底；
+  tooltip 条件从"长度>14"改为"实际被截断"。真机："这是一个非常非…格验证.txt"、
+  "Adobe Photosh…022" 两行中间省略，全列布局不变。
+- **机主晨间自测（08:25，被动观测）**：菜单序列化版上线后机主 2 秒内连开 3 个背景菜单 +
+  2 个 42 项文件菜单，全部正常开出关闭（cmd=0 快速浏览），日志零异常——正是原"时灵时不灵"
+  场景，首次经受机主本人连击。

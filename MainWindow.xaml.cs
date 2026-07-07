@@ -426,9 +426,10 @@ public partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
+        string labelText = TruncateLabel(en.DisplayName);
         var label = new TextBlock
         {
-            Text = en.DisplayName,
+            Text = labelText,
             Foreground = Brushes.White,
             FontSize = 12,
             // mac 质感：中英文都上 Bold（机主反馈 SemiBold 英文仍偏细；Windows 自带，免费合法）
@@ -436,7 +437,7 @@ public partial class MainWindow : Window
             FontWeight = FontWeights.Bold,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
-            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
             MaxHeight = 34,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
@@ -464,8 +465,8 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent, // 命中测试
         };
 
-        // 长名字悬停显示全名（短名不设，免打扰）
-        if (en.DisplayName.Length > 14)
+        // 被截断的名字悬停显示全名（短名不设，免打扰）
+        if (labelText != en.DisplayName)
             root.ToolTip = new ToolTip { Content = en.DisplayName };
 
         var iv = new IconVisual { Entry = en, Root = root, IconPlate = iconPlate, LabelPlate = labelPlate, Label = label };
@@ -476,6 +477,51 @@ public partial class MainWindow : Window
         // 捕获被外部打断（菜单进程抢前台等）→ 按下状态清零，否则之后一次悬停划过就会误触发拖拽
         root.LostMouseCapture += (s, e) => { if (!iv.Dragging) iv.MouseDown = false; };
         return iv;
+    }
+
+    // ── 标签截断（Finder 式：两行装不下时中间省略、保住扩展名） ──
+
+    /// <summary>标签两行内是否放得下（与 TextBlock 同字体/同 Display 模式/同宽度测量）。</summary>
+    private bool LabelFits(string text)
+    {
+        var ft = new FormattedText(text,
+            System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
+            new Typeface(LabelFontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
+            12, Brushes.White, null, TextFormattingMode.Display,
+            VisualTreeHelper.GetDpi(this).PixelsPerDip)
+        {
+            MaxTextWidth = CellW - 14, // labelPlate MaxWidth(CellW-4) − 左右 Padding(5+5)
+            Trimming = TextTrimming.None,
+        };
+        return ft.Height <= 34.5; // TextBlock MaxHeight=34（两行）
+    }
+
+    /// <summary>Finder 行为：溢出两行时中间省略，尾部保"扩展名+3 字符"（尾部区分度高，
+    /// mac 上实测规格见 research/notes/macos-finder-手感调研.md）。放得下则原样返回。</summary>
+    private string TruncateLabel(string name)
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(name) || LabelFits(name)) return name;
+
+            string ext = "";
+            try { ext = Path.GetExtension(name); } catch { }
+            if (ext.Length is 0 or > 8) ext = ""; // 无扩展名/超长伪扩展名按纯文本截
+            string stem = ext.Length > 0 ? name[..^ext.Length] : name;
+            int tailChars = Math.Min(3, Math.Max(0, stem.Length - 1));
+            string tail = stem[^tailChars..] + ext;
+
+            // 二分最长前缀："prefix…tail" 恰好塞进两行
+            int lo = 1, hi = stem.Length - tailChars;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                if (LabelFits($"{stem[..mid]}…{tail}")) lo = mid;
+                else hi = mid - 1;
+            }
+            return $"{stem[..lo]}…{tail}";
+        }
+        catch { return name; } // 测量失败原样返回，交给 CharacterEllipsis 兜底
     }
 
     // ── 布局引擎 ──────────────────────────────────────────────
@@ -550,6 +596,49 @@ public partial class MainWindow : Window
     private (int, int) ClampCell((int, int) cell) =>
         (Math.Clamp(cell.Item1, 0, MaxCol()), Math.Clamp(cell.Item2, 0, RowsPerColumn() - 1));
 
+    /// <summary>自由摆放：图标不吸格、可跨格，把显示脚印（CellW×CellH）盖到的所有格子
+    /// 标记为已占。新图标种子/新建文件夹找空格时避让用——不标记的话右上列流会把新图标
+    /// 直接叠在已有图标上（真机踩坑：新建文件落在 New Folder 同一格）。</summary>
+    private void MarkFootprint(HashSet<(int, int)> occupied, double l, double t)
+    {
+        var (w, _) = WorkSize;
+        double strideX = CellW + GapX, strideY = CellH + GapY;
+        double colExact = (w - MarginRight - CellW - l) / strideX;
+        double rowExact = (t - MarginTop) / strideY;
+        for (int col = (int)Math.Floor(colExact); col <= (int)Math.Ceiling(colExact); col++)
+        {
+            if (col < 0 || col > MaxCol()) continue;
+            double cl = w - MarginRight - CellW - col * strideX;
+            if (cl + CellW <= l || cl >= l + CellW) continue; // 该列与脚印无横向重叠
+            for (int row = (int)Math.Floor(rowExact); row <= (int)Math.Ceiling(rowExact); row++)
+            {
+                if (row < 0 || row >= RowsPerColumn()) continue;
+                double ct = MarginTop + row * strideY;
+                if (ct + CellH <= t || ct >= t + CellH) continue;
+                occupied.Add((col, row));
+            }
+        }
+    }
+
+    /// <summary>找空格用的占用集合：自由摆放按显示脚印（可跨格），网格按目标格。</summary>
+    private HashSet<(int, int)> OccupiedCellsForSeeding()
+    {
+        var occ = new HashSet<(int, int)>();
+        foreach (var iv in _icons.Values.Where(i => i.Canon != null))
+        {
+            if (Config.FreePlacement)
+            {
+                var (l, t) = CanonToPos(iv.Canon!);
+                MarkFootprint(occ, l, t);
+            }
+            else
+            {
+                occ.Add(ClampCell(CanonToCell(iv.Canon!)));
+            }
+        }
+        return occ;
+    }
+
     /// <summary>
     /// 全量重排（单一规范布局，macOS 模型）：已有 Canon 的图标只**现场推导**显示位置，
     /// **绝不回写** Canon——所以切分辨率不改变布局，切回精确还原。放不下才折行/钳制（仅显示）。
@@ -574,11 +663,14 @@ public partial class MainWindow : Window
 
         if (Config.FreePlacement)
         {
-            // 自由摆放：按锚距现场推导（只屏内钳制，不吸格/不避让、不回写 Canon）
+            // 自由摆放：按锚距现场推导（只屏内钳制，不吸格/不避让、不回写 Canon）。
+            // 但要把脚印占格记入 placed——否则下面的新图标列流对着空集合避让，
+            // 新建文件必然叠在右上角已有图标上（真机踩坑）
             foreach (var iv in _icons.Values.Where(i => i.Canon != null))
             {
                 var (l, t) = CanonToPos(iv.Canon!);
                 MoveIcon(iv, l, t, animated);
+                MarkFootprint(placed, l, t);
             }
         }
         else
@@ -1282,9 +1374,8 @@ public partial class MainWindow : Window
                 name = $"新建文件夹 ({n})";
                 path = Path.Combine(baseDir, name);
             }
-            // 预归属到本屏第一个空格（否则新文件夹默认落到主屏）
-            var occupied = _icons.Values.Where(o => o.Canon != null)
-                .Select(o => ClampCell(CanonToCell(o.Canon!))).ToHashSet();
+            // 预归属到本屏第一个空格（否则新文件夹默认落到主屏）；自由摆放按脚印避让
+            var occupied = OccupiedCellsForSeeding();
             var cell = NearestFreeCell((0, 0), occupied);
             LayoutFile.Set(MonKey, name, CellToCanon(cell.Item1, cell.Item2));
             LayoutFile.Save();
