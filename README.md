@@ -72,7 +72,8 @@ Windows desktop does.
   way.
 - **Start on boot** — a checkbox in the background menu (or `--enable-autostart`).
 - **macOS-style Settings window** ("MacDesk 设置…" in the background menu) —
-  sidebar + content pages like macOS System Settings: autostart, menu mode,
+  sidebar + content pages like macOS System Settings, following the system
+  light/dark app theme (including the title bar): autostart, menu mode,
   **accent color** (changes selection/marquee colors live, macOS palette),
   context-menu blacklist with a picker fed by recently seen menu items, native
   layout re-import, and an About page with a manual GitHub-Releases update

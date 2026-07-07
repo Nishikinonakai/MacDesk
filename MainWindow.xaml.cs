@@ -843,9 +843,9 @@ public partial class MainWindow : Window
         var kindOrder = order.Where(groups.ContainsKey).ToList();
         if (_expandedStack != null && !kindOrder.Contains(_expandedStack)) _expandedStack = null; // 展开中的堆消失（清空/改型）
 
-        // 收起动画的"飞回堆位"批次：动画播完才 Collapsed。定时器触发时用当前 _expandedStack
-        // 重新核实——期间被再点开就跳过隐藏，不需要显式取消定时器，天然免疫重入。
-        var justCollapsing = new List<(IconVisual M, string Kind)>();
+        // 收起动画的"飞回堆位"批次：动画播完才 Collapsed。定时器触发时按"那一刻"的分组/展开
+        // 状态重新核实——期间被再点开/换分组就跳过隐藏，不需要显式取消定时器，天然免疫重入。
+        var justCollapsing = new List<IconVisual>();
 
         foreach (var kind in kindOrder)
         {
@@ -875,7 +875,7 @@ public partial class MainWindow : Window
                 {
                     // 刚收起（含首次开启叠放）：先飞回堆位，播完动画再 Collapsed——不要瞬间消失
                     MoveIcon(m, pl, pt, animated);
-                    if (animated) justCollapsing.Add((m, kind));
+                    if (animated) justCollapsing.Add(m);
                     else m.Root.Visibility = Visibility.Collapsed; // 非动画通道（冷启动）：直接落位
                 }
                 else
@@ -899,8 +899,10 @@ public partial class MainWindow : Window
             timer.Tick += (_, _) =>
             {
                 timer.Stop();
-                foreach (var (m, kind) in batch)
-                    if (Config.UseStacks && _expandedStack != kind)
+                // 归属用触发时刻的分组函数现算：350ms 窗口内换过分组依据的话，捕获的旧堆名会误判
+                var (classify, _) = StackGrouping();
+                foreach (var m in batch)
+                    if (Config.UseStacks && _expandedStack != classify(m.Entry))
                         m.Root.Visibility = Visibility.Collapsed;
             };
             timer.Start();
@@ -1068,6 +1070,11 @@ public partial class MainWindow : Window
         pile.IconFront.Visibility = generic ? Visibility.Collapsed : Visibility.Visible;
         pile.IconMid.Visibility = !generic && members.Count >= 2 ? Visibility.Visible : Visibility.Collapsed;
         pile.IconBack.Visibility = !generic && members.Count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+
+        // 布局刷新可能打断进行中的刮擦：先把前层复位到静息图，否则下面 SetLayerIcon 的
+        // 路径缓存命中会跳过重载，把刮擦帧误捕获成新的静息图（此后前层永久卡在错的成员上）
+        if (pile.ScrubIndex != -1 && pile.RestingFrontIcon != null)
+            pile.IconFront.Source = pile.RestingFrontIcon;
 
         if (!generic)
         {

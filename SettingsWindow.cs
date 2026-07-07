@@ -1,8 +1,10 @@
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using MacDesk.Services;
+using Microsoft.Win32;
 using Brushes = System.Windows.Media.Brushes;
 using Color = System.Windows.Media.Color;
 using HorizontalAlignment = System.Windows.HorizontalAlignment;
@@ -43,24 +45,67 @@ internal sealed class SettingsWindow : Window
 
     private static Settings Config => Desktop.Config;
 
-    // mac 系统设置观感的常量
-    private static readonly Brush SidebarBg = new SolidColorBrush(Color.FromRgb(0xEC, 0xEC, 0xEE));
-    private static readonly Brush ContentBg = new SolidColorBrush(Color.FromRgb(0xF7, 0xF7, 0xF9));
-    private static readonly Brush CardBg = Brushes.White;
-    private static readonly Brush CardBorder = new SolidColorBrush(Color.FromRgb(0xE3, 0xE3, 0xE6));
-    private static readonly Brush Subtle = new SolidColorBrush(Color.FromRgb(0x6E, 0x6E, 0x73));
+    // mac 系统设置观感：颜色随系统深色/浅色 app 模式切换（机主系统是深色 app 模式，
+    // 设置窗之前恒是浅色 mac 风——这批改成读注册表跟随，每次开窗现读一次即可，
+    // 不需要监听实时切换：系统主题切换时设置窗通常没开着）。
+    private readonly bool _dark = DetectDarkMode();
+    private readonly Brush SidebarBg, ContentBg, CardBg, CardBorder, Subtle, TextFg,
+        ButtonBg, ButtonBorder, ButtonHoverBg, FieldBg, FieldBorder, AccentRingSelected, DangerFg;
+
+    private static bool DetectDarkMode()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            // 值不存在按浅色算（该键 Win10 1809 前不存在，微软自己文档里的默认假设）
+            return key?.GetValue("AppsUseLightTheme") is int v && v == 0;
+        }
+        catch { return false; }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        if (!_dark) return;
+        try
+        {
+            int on = 1;
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int));
+        }
+        catch { } // 老版本 dwmapi 没有这个 attribute，标题条留浅色不影响功能
+    }
 
     private readonly ContentControl _page = new();
     private readonly ListBox _nav = new();
 
     private SettingsWindow()
     {
+        (SidebarBg, ContentBg, CardBg, CardBorder, Subtle, TextFg, ButtonBg, ButtonBorder,
+            ButtonHoverBg, FieldBg, FieldBorder, AccentRingSelected, DangerFg) = _dark
+            ? (Rgb(0x26, 0x26, 0x29), Rgb(0x1E, 0x1E, 0x20), Rgb(0x2C, 0x2C, 0x2F), Rgb(0x3A, 0x3A, 0x3E),
+               Rgb(0x9A, 0x9A, 0x9F), Rgb(0xF2, 0xF2, 0xF3), Rgb(0x3A, 0x3A, 0x3E), Rgb(0x4A, 0x4A, 0x4E),
+               Rgb(0x46, 0x46, 0x4B), Rgb(0x23, 0x23, 0x26), Rgb(0x3A, 0x3A, 0x3E), Rgb(0xE5, 0xE5, 0xE5), Rgb(0xFF, 0x6B, 0x6B))
+            : (Rgb(0xEC, 0xEC, 0xEE), Rgb(0xF7, 0xF7, 0xF9), Brushes.White, Rgb(0xE3, 0xE3, 0xE6),
+               Rgb(0x6E, 0x6E, 0x73), Brushes.Black, Rgb(0xFF, 0xFF, 0xFF), Rgb(0xD0, 0xD0, 0xD5),
+               Rgb(0xE5, 0xE5, 0xE8), Brushes.White, Rgb(0xD0, 0xD0, 0xD5), Rgb(0x33, 0x33, 0x38), Rgb(0xC0, 0x2B, 0x2B));
+
         Title = "MacDesk 设置";
         Width = 760;
         Height = 540;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ResizeMode = ResizeMode.NoResize;
         Background = ContentBg;
+        Foreground = TextFg; // Foreground 是继承属性：子树里没单独设色的 TextBlock 全部自动跟随
+        Resources.Add(typeof(Button), ButtonStyle());
+        // 原生 ComboBox 的 chrome 不吃 Background（深色下真机实测仍是白块，像素采样 rgb(233,233,233)）
+        // → 深色时最小重模板；浅色保持原生（已验证过的观感，别动）
+        if (_dark) Resources.Add(typeof(ComboBox), ComboStyle());
         try { Icon = BitmapFrame.Create(new Uri("pack://application:,,,/Assets/macdesk.ico")); } catch { }
 
         var root = new Grid();
@@ -147,7 +192,7 @@ internal sealed class SettingsWindow : Window
         return p;
     }
 
-    private static Border Card(UIElement content) => new()
+    private Border Card(UIElement content) => new()
     {
         Background = CardBg,
         BorderBrush = CardBorder,
@@ -158,7 +203,7 @@ internal sealed class SettingsWindow : Window
         Child = content,
     };
 
-    private static UIElement Row(string label, UIElement control, string? hint = null)
+    private UIElement Row(string label, UIElement control, string? hint = null)
     {
         var grid = new Grid { Margin = new Thickness(0, 9, 0, 9) };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -175,19 +220,129 @@ internal sealed class SettingsWindow : Window
         return grid;
     }
 
-    private static Border Separator() => new()
+    private Border Separator() => new()
     {
         Height = 1,
         Background = CardBorder,
         Margin = new Thickness(-16, 0, -16, 0),
     };
 
-    private static CheckBox Toggle(bool initial, Action<bool> onChange)
+    private CheckBox Toggle(bool initial, Action<bool> onChange)
     {
-        var cb = new CheckBox { IsChecked = initial };
+        var cb = new CheckBox { IsChecked = initial, Foreground = TextFg };
+        if (_dark) cb.Background = ButtonBg; // 原生 CheckBox 只做基础着色，不整套重模板
         cb.Checked += (_, _) => onChange(true);
         cb.Unchecked += (_, _) => onChange(false);
         return cb;
+    }
+
+    private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+
+    /// <summary>mac 风扁平按钮：圆角 + 主题色背板，悬停微亮/微暗。整窗通过
+    /// Resources[typeof(Button)] 隐式套用，7 处按钮调用点都不用改。</summary>
+    private Style ButtonStyle()
+    {
+        var style = new Style(typeof(Button));
+        style.Setters.Add(new Setter(Control.BackgroundProperty, ButtonBg));
+        style.Setters.Add(new Setter(Control.ForegroundProperty, TextFg));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty, ButtonBorder));
+        style.Setters.Add(new Setter(Control.BorderThicknessProperty, new Thickness(1)));
+        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(10, 4, 10, 4)));
+        var template = new ControlTemplate(typeof(Button));
+        var border = new FrameworkElementFactory(typeof(Border), "bd");
+        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+        var tp = System.Windows.Data.RelativeSource.TemplatedParent;
+        border.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("Background") { RelativeSource = tp });
+        border.SetBinding(Border.BorderBrushProperty, new System.Windows.Data.Binding("BorderBrush") { RelativeSource = tp });
+        border.SetBinding(Border.BorderThicknessProperty, new System.Windows.Data.Binding("BorderThickness") { RelativeSource = tp });
+        border.SetBinding(Border.PaddingProperty, new System.Windows.Data.Binding("Padding") { RelativeSource = tp });
+        var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
+        presenter.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        presenter.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        border.AppendChild(presenter);
+        template.VisualTree = border;
+        var hover = new Trigger { Property = IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(Border.BackgroundProperty, ButtonHoverBg, "bd"));
+        template.Triggers.Add(hover);
+        var disabled = new Trigger { Property = IsEnabledProperty, Value = false };
+        disabled.Setters.Add(new Setter(OpacityProperty, 0.5));
+        template.Triggers.Add(disabled);
+        style.Setters.Add(new Setter(TemplateProperty, template));
+        return style;
+    }
+
+    /// <summary>深色 ComboBox 最小重模板：主体 Border + 右侧箭头 + 下拉 Popup。
+    /// 放弃原生 chrome 意味着键盘展开等细节从简——这个控件只在黑名单页做鼠标挑选，够用。</summary>
+    private Style ComboStyle()
+    {
+        var tp = System.Windows.Data.RelativeSource.TemplatedParent;
+        var style = new Style(typeof(ComboBox));
+        style.Setters.Add(new Setter(Control.ForegroundProperty, TextFg));
+
+        var itemStyle = new Style(typeof(ComboBoxItem));
+        itemStyle.Setters.Add(new Setter(Control.ForegroundProperty, TextFg));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(8, 4, 8, 4)));
+        style.Setters.Add(new Setter(ComboBox.ItemContainerStyleProperty, itemStyle));
+
+        var template = new ControlTemplate(typeof(ComboBox));
+        var root = new FrameworkElementFactory(typeof(Grid));
+
+        // 整块都是开关：ToggleButton 铺满，模板换成主题 Border + 手画箭头
+        var toggle = new FrameworkElementFactory(typeof(System.Windows.Controls.Primitives.ToggleButton));
+        toggle.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty,
+            new System.Windows.Data.Binding("IsDropDownOpen") { RelativeSource = tp, Mode = System.Windows.Data.BindingMode.TwoWay });
+        toggle.SetValue(FocusableProperty, false);
+        var toggleTemplate = new ControlTemplate(typeof(System.Windows.Controls.Primitives.ToggleButton));
+        var body = new FrameworkElementFactory(typeof(Border));
+        body.SetValue(Border.BackgroundProperty, FieldBg);
+        body.SetValue(Border.BorderBrushProperty, FieldBorder);
+        body.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        body.SetValue(Border.CornerRadiusProperty, new CornerRadius(5));
+        var arrow = new FrameworkElementFactory(typeof(System.Windows.Shapes.Path));
+        arrow.SetValue(System.Windows.Shapes.Path.DataProperty, Geometry.Parse("M 0,0 L 4,4 L 8,0"));
+        arrow.SetValue(System.Windows.Shapes.Shape.StrokeProperty, Subtle);
+        arrow.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 1.5);
+        arrow.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Right);
+        arrow.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        arrow.SetValue(MarginProperty, new Thickness(0, 0, 9, 0));
+        body.AppendChild(arrow);
+        toggleTemplate.VisualTree = body;
+        toggle.SetValue(Control.TemplateProperty, toggleTemplate);
+        root.AppendChild(toggle);
+
+        // 选中项文本（不截点击，让它落到下面的 toggle）
+        var content = new FrameworkElementFactory(typeof(ContentPresenter));
+        content.SetBinding(ContentPresenter.ContentProperty,
+            new System.Windows.Data.Binding("SelectionBoxItem") { RelativeSource = tp });
+        content.SetValue(MarginProperty, new Thickness(9, 3, 26, 3));
+        content.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        content.SetValue(IsHitTestVisibleProperty, false);
+        root.AppendChild(content);
+
+        var popup = new FrameworkElementFactory(typeof(System.Windows.Controls.Primitives.Popup));
+        popup.SetBinding(System.Windows.Controls.Primitives.Popup.IsOpenProperty,
+            new System.Windows.Data.Binding("IsDropDownOpen") { RelativeSource = tp });
+        popup.SetValue(System.Windows.Controls.Primitives.Popup.AllowsTransparencyProperty, true);
+        popup.SetValue(System.Windows.Controls.Primitives.Popup.PlacementProperty,
+            System.Windows.Controls.Primitives.PlacementMode.Bottom);
+        popup.SetValue(System.Windows.Controls.Primitives.Popup.StaysOpenProperty, false);
+        var drop = new FrameworkElementFactory(typeof(Border));
+        drop.SetValue(Border.BackgroundProperty, CardBg);
+        drop.SetValue(Border.BorderBrushProperty, FieldBorder);
+        drop.SetValue(Border.BorderThicknessProperty, new Thickness(1));
+        drop.SetValue(Border.CornerRadiusProperty, new CornerRadius(6));
+        drop.SetValue(MaxHeightProperty, 260.0);
+        drop.SetValue(MarginProperty, new Thickness(0, 2, 0, 0));
+        drop.SetBinding(MinWidthProperty, new System.Windows.Data.Binding("ActualWidth") { RelativeSource = tp });
+        var scroll = new FrameworkElementFactory(typeof(ScrollViewer));
+        scroll.AppendChild(new FrameworkElementFactory(typeof(ItemsPresenter)));
+        drop.AppendChild(scroll);
+        popup.AppendChild(drop);
+        root.AppendChild(popup);
+
+        template.VisualTree = root;
+        style.Setters.Add(new Setter(TemplateProperty, template));
+        return style;
     }
 
     // ── 通用 ──────────────────────────────────────────────────
@@ -233,7 +388,7 @@ internal sealed class SettingsWindow : Window
         {
             Content = "退出 MacDesk",
             Padding = new Thickness(14, 4, 14, 4),
-            Foreground = new SolidColorBrush(Color.FromRgb(0xC0, 0x2B, 0x2B)),
+            Foreground = DangerFg,
         };
         quitBtn.Click += (_, _) => App.BeginUserQuit();
         advanced.Children.Add(Row("退出", quitBtn, "还原原生桌面图标并停止 MacDesk（快捷键 Ctrl+Alt+Q）"));
@@ -264,7 +419,7 @@ internal sealed class SettingsWindow : Window
                     Margin = new Thickness(0, 0, 10, 0),
                     Cursor = Cursors.Hand,
                     ToolTip = name,
-                    BorderBrush = active ? new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x38)) : Brushes.Transparent,
+                    BorderBrush = active ? AccentRingSelected : Brushes.Transparent,
                     BorderThickness = new Thickness(2.5),
                 };
                 if (active)
@@ -297,7 +452,7 @@ internal sealed class SettingsWindow : Window
         var p = Page("右键菜单");
         // 每次建页都新建控件：字段单例会滞留在上一次页面的可视树里，重挂载抛
         // "already the logical child" 被兜底吞掉 → 页面点不进去（机主实测 bug）
-        var blacklist = new ListBox { Height = 150, BorderThickness = new Thickness(0) };
+        var blacklist = new ListBox { Height = 150, BorderThickness = new Thickness(0), Background = FieldBg, Foreground = TextFg };
         void RefreshList()
         {
             blacklist.Items.Clear();
@@ -321,7 +476,7 @@ internal sealed class SettingsWindow : Window
         });
 
         var pickRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
-        var pick = new ComboBox { Margin = new Thickness(0, 0, 6, 0) };
+        var pick = new ComboBox { Margin = new Thickness(0, 0, 6, 0), Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
         var pickBtn = new Button { Content = "屏蔽该项", Width = 88, Padding = new Thickness(0, 3, 0, 3) };
         DockPanel.SetDock(pickBtn, Dock.Right);
         pickRow.Children.Add(pickBtn);
@@ -337,7 +492,7 @@ internal sealed class SettingsWindow : Window
         pick.DropDownOpened += (_, _) => FillPick();
 
         var addRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
-        var input = new TextBox { Margin = new Thickness(0, 0, 6, 0), Padding = new Thickness(2) };
+        var input = new TextBox { Margin = new Thickness(0, 0, 6, 0), Padding = new Thickness(2), Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
         var addBtn = new Button { Content = "添加", Width = 64, Padding = new Thickness(0, 3, 0, 3) };
         DockPanel.SetDock(addBtn, Dock.Right);
         addRow.Children.Add(addBtn);
