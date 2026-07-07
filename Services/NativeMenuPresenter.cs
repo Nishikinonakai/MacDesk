@@ -155,7 +155,8 @@ internal static class NativeMenuPresenter
     private const uint ID_ARRANGE = 0x7001, ID_UNDO = 0x7002, ID_TOGGLE = 0x7003, ID_QUIT = 0x7004,
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
-                       ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C;
+                       ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C,
+                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E;
     private const uint ID_D_OPEN = 0x7101, ID_D_OPENWITH = 0x7102, ID_D_CUT = 0x7103, ID_D_COPY = 0x7104,
                        ID_D_RENAME = 0x7105, ID_D_DELETE = 0x7106, ID_D_PROPS = 0x7107;
 
@@ -164,28 +165,48 @@ internal static class NativeMenuPresenter
         new() { Id = id, Text = text, Checked = check };
 
     /// <summary>背景菜单尾部的 MacDesk 自定义项（macOS 克制风格，机主定案）：
-    /// 只留整理/排序/壁纸/设置四类；自启、退出、原生图标开关全部住进设置窗口。
-    /// "无（自由摆放）"进排序方式子菜单 = macOS "Sort By > None" 同款语义。</summary>
-    public static List<MenuSnapshot.Item> CustomBackgroundItems() => new()
+    /// 未叠放 = 使用叠放 / 排序方式▸（"无（自由摆放）"= macOS Sort By > None）/ 整理 / 撤销；
+    /// 已叠放 = ✓使用叠放 / 分组依据▸（与 macOS 一致，菜单语义随开关切换）。
+    /// 自启、退出、原生图标开关住在设置窗口。</summary>
+    public static List<MenuSnapshot.Item> CustomBackgroundItems()
     {
-        Sep(),
-        Cmd(ID_ARRANGE, "按 mac 式网格整理"),
-        new MenuSnapshot.Item
-        {
-            Text = "排序方式",
-            Children = new List<MenuSnapshot.Item>
+        var cfg = MacDesk.Desktop.Config;
+        if (cfg.UseStacks)
+            return new()
             {
-                Cmd(ID_FREE, "无（自由摆放）", MacDesk.Desktop.Config.FreePlacement),
                 Sep(),
-                Cmd(ID_SORT_NAME, "名称"), Cmd(ID_SORT_DATE, "修改日期"),
-                Cmd(ID_SORT_SIZE, "大小"), Cmd(ID_SORT_KIND, "类型"),
+                Cmd(ID_STACKS, "使用叠放", true),
+                new MenuSnapshot.Item
+                {
+                    Text = "分组依据",
+                    Children = new List<MenuSnapshot.Item> { Cmd(ID_GROUP_KIND, "类型", true) },
+                },
+                Sep(),
+                Cmd(ID_PERSONALIZE, "更换壁纸…"),
+                Cmd(ID_SETTINGS, "MacDesk 设置…"),
+            };
+        return new()
+        {
+            Sep(),
+            Cmd(ID_STACKS, "使用叠放"),
+            new MenuSnapshot.Item
+            {
+                Text = "排序方式",
+                Children = new List<MenuSnapshot.Item>
+                {
+                    Cmd(ID_FREE, "无（自由摆放）", cfg.FreePlacement),
+                    Sep(),
+                    Cmd(ID_SORT_NAME, "名称"), Cmd(ID_SORT_DATE, "修改日期"),
+                    Cmd(ID_SORT_SIZE, "大小"), Cmd(ID_SORT_KIND, "类型"),
+                },
             },
-        },
-        Cmd(ID_UNDO, "撤销上次整理"),
-        Sep(),
-        Cmd(ID_PERSONALIZE, "更换壁纸…"),
-        Cmd(ID_SETTINGS, "MacDesk 设置…"),
-    };
+            Cmd(ID_ARRANGE, "按 mac 式网格整理"),
+            Cmd(ID_UNDO, "撤销上次整理"),
+            Sep(),
+            Cmd(ID_PERSONALIZE, "更换壁纸…"),
+            Cmd(ID_SETTINGS, "MacDesk 设置…"),
+        };
+    }
 
     /// <summary>降级文件菜单（探针判定该类型原生菜单必崩时）。动词与旧 host 版一致。</summary>
     public static List<MenuSnapshot.Item> DegradedFileItems(string[] paths)
@@ -288,6 +309,8 @@ internal static class NativeMenuPresenter
             case ID_SORT_KIND: CommandChannel.Signal("SortKind"); return true;
             case ID_QUIT: CommandChannel.Signal("Quit"); return true;
             case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return true;
+            case ID_STACKS: CommandChannel.Signal("ToggleStacks"); return true;
+            case ID_GROUP_KIND: return true; // v1 只有"类型"，点了保持原样
             case ID_PERSONALIZE:
                 try
                 {

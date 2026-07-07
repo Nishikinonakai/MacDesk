@@ -11,9 +11,13 @@ internal sealed class Settings
     /// <summary>自由摆放：拖放落点即位置、重排不吸附网格（macOS arrangeBy=none）。默认关（Windows 习惯网格）。</summary>
     public bool FreePlacement { get; set; }
 
-    /// <summary>右键菜单黑名单：菜单项文本含任一子串（不分大小写）即被移除。
-    /// 手工编辑 settings.json 配置；设置 GUI 做出来之前的过渡形态（机主点名讨厌 AMD 项）。</summary>
-    public List<string> MenuBlacklist { get; set; } = new() { "AMD Software" };
+    /// <summary>右键菜单黑名单：菜单项文本含任一子串（不分大小写）即被移除。设置 GUI 可增删。
+    /// 默认屏蔽：AMD 项（机主点名）+ "授予访问权限"（桌面场景纯噪音的网络共享向导，中英双杀）。</summary>
+    public List<string> MenuBlacklist { get; set; } = new() { "AMD Software", "Give access to", "授予访问权限" };
+
+    /// <summary>使用叠放（macOS Use Stacks）：文件按类型聚成堆、自动右上列流，文件夹保持独立。
+    /// 开启期间不写规范布局，关闭即恢复原摆放。</summary>
+    public bool UseStacks { get; set; }
 
     /// <summary>菜单序列化进主进程同线程弹出（前台战争终极解）。false = 回退旧 host 内
     /// TrackPopupMenu 路径（settle-wait+重试），新路径出问题时的免重建逃生口。</summary>
@@ -44,6 +48,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("MenuInMainProcess", out var mm)) s.MenuInMainProcess = mm.GetBoolean();
                 if (doc.RootElement.TryGetProperty("AccentColor", out var ac) && ac.ValueKind == JsonValueKind.String)
                     s.AccentColor = ac.GetString()!;
+                if (doc.RootElement.TryGetProperty("UseStacks", out var us)) s.UseStacks = us.GetBoolean();
             }
         }
         catch { }
@@ -55,7 +60,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

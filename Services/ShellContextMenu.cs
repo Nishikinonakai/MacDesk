@@ -27,7 +27,8 @@ internal static class ShellContextMenu
     private const uint ID_ARRANGE = 0x7001, ID_UNDO = 0x7002, ID_TOGGLE = 0x7003, ID_QUIT = 0x7004,
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
-                       ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C;
+                       ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C,
+                       ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E;
 
     [ComImport, Guid("000214E6-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellFolder
@@ -600,21 +601,32 @@ internal static class ShellContextMenu
             if (built == null) return;
             var hMenu = built.HMenu;
 
-            // macOS 克制风格（与 v2 主进程菜单同构）：自启/退出/原生图标开关都在设置窗口
+            // macOS 克制风格（与 v2 主进程菜单同构）：自启/退出/原生图标开关都在设置窗口；
+            // 菜单语义随"使用叠放"切换（macOS 同款）
+            var cfg = Settings.Load();
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
-            AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_ARRANGE, "按 mac 式网格整理");
-
-            IntPtr hSort = CreatePopupMenu();
-            AppendMenuW(hSort, MF_STRING | (Settings.Load().FreePlacement ? MF_CHECKED : 0),
-                (UIntPtr)ID_FREE, "无（自由摆放）");
-            AppendMenuW(hSort, MF_SEPARATOR, UIntPtr.Zero, null);
-            AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_NAME, "名称");
-            AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_DATE, "修改日期");
-            AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_SIZE, "大小");
-            AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_KIND, "类型");
-            AppendMenuW(hMenu, MF_POPUP, (UIntPtr)(ulong)hSort, "排序方式");
-
-            AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_UNDO, "撤销上次整理");
+            if (cfg.UseStacks)
+            {
+                AppendMenuW(hMenu, MF_STRING | MF_CHECKED, (UIntPtr)ID_STACKS, "使用叠放");
+                IntPtr hGroup = CreatePopupMenu();
+                AppendMenuW(hGroup, MF_STRING | MF_CHECKED, (UIntPtr)ID_GROUP_KIND, "类型");
+                AppendMenuW(hMenu, MF_POPUP, (UIntPtr)(ulong)hGroup, "分组依据");
+            }
+            else
+            {
+                AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_STACKS, "使用叠放");
+                IntPtr hSort = CreatePopupMenu();
+                AppendMenuW(hSort, MF_STRING | (cfg.FreePlacement ? MF_CHECKED : 0),
+                    (UIntPtr)ID_FREE, "无（自由摆放）");
+                AppendMenuW(hSort, MF_SEPARATOR, UIntPtr.Zero, null);
+                AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_NAME, "名称");
+                AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_DATE, "修改日期");
+                AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_SIZE, "大小");
+                AppendMenuW(hSort, MF_STRING, (UIntPtr)ID_SORT_KIND, "类型");
+                AppendMenuW(hMenu, MF_POPUP, (UIntPtr)(ulong)hSort, "排序方式");
+                AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_ARRANGE, "按 mac 式网格整理");
+                AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_UNDO, "撤销上次整理");
+            }
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_PERSONALIZE, "更换壁纸…");
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_SETTINGS, "MacDesk 设置…");
@@ -639,6 +651,8 @@ internal static class ShellContextMenu
                 case ID_SORT_KIND: CommandChannel.Signal("SortKind"); return;
                 case ID_QUIT: CommandChannel.Signal("Quit"); return;
                 case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return;
+                case ID_STACKS: CommandChannel.Signal("ToggleStacks"); return;
+                case ID_GROUP_KIND: return; // v1 只有"类型"
                 case ID_PERSONALIZE:
                     try
                     {

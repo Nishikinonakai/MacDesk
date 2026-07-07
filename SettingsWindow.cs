@@ -292,11 +292,17 @@ internal sealed class SettingsWindow : Window
 
     // ── 右键菜单 ──────────────────────────────────────────────
 
-    private readonly ListBox _blacklist = new() { Height = 150, BorderThickness = new Thickness(0) };
-
     private UIElement BuildMenuPage()
     {
         var p = Page("右键菜单");
+        // 每次建页都新建控件：字段单例会滞留在上一次页面的可视树里，重挂载抛
+        // "already the logical child" 被兜底吞掉 → 页面点不进去（机主实测 bug）
+        var blacklist = new ListBox { Height = 150, BorderThickness = new Thickness(0) };
+        void RefreshList()
+        {
+            blacklist.Items.Clear();
+            foreach (var b in Config.MenuBlacklist) blacklist.Items.Add(b);
+        }
 
         var bl = new StackPanel();
         bl.Children.Add(new TextBlock
@@ -307,11 +313,11 @@ internal sealed class SettingsWindow : Window
             Foreground = Subtle,
             Margin = new Thickness(0, 10, 0, 8),
         });
-        RefreshBlacklist();
+        RefreshList();
         bl.Children.Add(new Border
         {
             BorderBrush = CardBorder, BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6), Child = _blacklist,
+            CornerRadius = new CornerRadius(6), Child = blacklist,
         });
 
         var pickRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0) };
@@ -356,7 +362,7 @@ internal sealed class SettingsWindow : Window
             {
                 Config.MenuBlacklist.Add(s);
                 Config.Save();
-                RefreshBlacklist();
+                RefreshList();
             }
             FillPick();
         }
@@ -365,21 +371,15 @@ internal sealed class SettingsWindow : Window
         pickBtn.Click += (_, _) => { if (pick.SelectedItem is string s) Add(s); };
         delBtn.Click += (_, _) =>
         {
-            if (_blacklist.SelectedItem is not string sel) return;
+            if (blacklist.SelectedItem is not string sel) return;
             Config.MenuBlacklist.RemoveAll(b => string.Equals(b, sel, StringComparison.OrdinalIgnoreCase));
             Config.Save();
-            RefreshBlacklist();
+            RefreshList();
             FillPick();
         };
         p.Children.Add(Card(bl));
 
         return p;
-    }
-
-    private void RefreshBlacklist()
-    {
-        _blacklist.Items.Clear();
-        foreach (var b in Config.MenuBlacklist) _blacklist.Items.Add(b);
     }
 
     // ── 关于 ──────────────────────────────────────────────────

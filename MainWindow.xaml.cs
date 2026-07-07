@@ -169,6 +169,12 @@ public partial class MainWindow : Window
         CommandChannel.Listen("SortKind", () => Dispatcher.BeginInvoke(() => SortArrangeAll("kind")));
         CommandChannel.Listen("Quit", () => Dispatcher.BeginInvoke(App.BeginUserQuit));
         CommandChannel.Listen("OpenSettings", () => Dispatcher.BeginInvoke(SettingsWindow.ShowSingleton));
+        CommandChannel.Listen("ToggleStacks", () => Dispatcher.BeginInvoke(() =>
+        {
+            Config.UseStacks = !Config.UseStacks;
+            Config.Save();
+            Desktop.LayoutAllWindows(animated: true);
+        }));
 
         // 降级文件菜单（原生菜单被崩溃扩展拖垮时）的核心动词：对当前选中执行
         CommandChannel.Listen("OpenSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.OpenSelectionItems()));
@@ -650,7 +656,11 @@ public partial class MainWindow : Window
     {
         var (w, h) = WorkSize;
         if (w < 1 || h < 1) return;
-        Log.Write($"[{MonKey}] layout pass worksize={w:F0}x{h:F0}{(Config.FreePlacement ? " [free]" : "")}");
+        Log.Write($"[{MonKey}] layout pass worksize={w:F0}x{h:F0}{(Config.FreePlacement ? " [free]" : "")}{(Config.UseStacks ? " [stacks]" : "")}");
+
+        // 使用叠放（macOS Use Stacks）：独立的自动整理模式，不碰规范布局，关闭即恢复
+        if (Config.UseStacks) { LayoutStacks(animated); return; }
+        if (_stackPiles.Count > 0) ClearStacks();
 
         // 规范布局是唯一事实来源：重排前全员取有效 Canon（含归属离场显示器的孤儿——推导显示、不回写）
         foreach (var iv in _icons.Values)
@@ -703,6 +713,193 @@ public partial class MainWindow : Window
             MoveIcon(iv, l, t, animated);
         }
         LayoutFile.Save();
+    }
+
+    // ── 使用叠放（macOS Use Stacks v1：文件按类型聚堆，文件夹/虚拟项独立） ──
+    // 语义与 macOS 一致：叠放是自动整理模式——开启期间列流自动排布、不写规范布局，
+    // 关闭后 LayoutAll 按 Canon 恢复原摆放。点击堆展开/再点收起，展开项是真实图标
+    // （可开/可拖出）。分组依据 v1 只有"类型"。
+
+    private sealed class PileVisual
+    {
+        public Border Root = null!;
+        public Image Icon = null!;
+        public TextBlock Label = null!;
+        public Border LabelPlate = null!;
+    }
+
+    private readonly Dictionary<string, PileVisual> _stackPiles = new();
+    private string? _expandedStack;
+
+    private static readonly (string Kind, string[] Exts)[] StackKindTable =
+    {
+        ("应用程序", new[] { ".lnk", ".url", ".exe", ".appref-ms" }),
+        ("图片", new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".ico", ".svg" }),
+        ("文档", new[] { ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".rtf", ".csv" }),
+        ("压缩包", new[] { ".zip", ".7z", ".rar", ".gz", ".tar", ".iso" }),
+    };
+
+    private static string StackKindOf(DesktopEntry en)
+    {
+        var ext = Path.GetExtension(en.Path).ToLowerInvariant();
+        foreach (var (kind, exts) in StackKindTable)
+            if (exts.Contains(ext)) return kind;
+        return "其他";
+    }
+
+    private void ClearStacks()
+    {
+        foreach (var p in _stackPiles.Values) IconCanvas.Children.Remove(p.Root);
+        _stackPiles.Clear();
+        _expandedStack = null;
+        foreach (var iv in _icons.Values) iv.Root.Visibility = Visibility.Visible;
+    }
+
+    private void LayoutStacks(bool animated)
+    {
+        int rows = RowsPerColumn();
+        int col = 0, row = 0;
+        (double L, double T) Take()
+        {
+            var pos = CellPos(col, row);
+            Advance(ref col, ref row, rows);
+            return pos;
+        }
+
+        static bool IsSingle(IconVisual i) => i.Entry.Path.StartsWith("::") || Directory.Exists(i.Entry.Path);
+        var virt = _icons.Values.Where(i => i.Entry.Path.StartsWith("::"));
+        var dirs = _icons.Values.Where(i => !i.Entry.Path.StartsWith("::") && IsSingle(i))
+            .OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase);
+
+        foreach (var iv in virt.Concat(dirs))
+        {
+            iv.Root.Visibility = Visibility.Visible;
+            var (l, t) = Take();
+            MoveIcon(iv, l, t, animated);
+        }
+
+        var groups = _icons.Values.Where(i => !IsSingle(i))
+            .GroupBy(i => StackKindOf(i.Entry))
+            .ToDictionary(g => g.Key,
+                g => g.OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList());
+        var kindOrder = StackKindTable.Select(k => k.Kind).Append("其他").Where(groups.ContainsKey).ToList();
+
+        foreach (var kind in kindOrder)
+        {
+            var members = groups[kind];
+            var pile = GetOrCreatePile(kind);
+            pile.Icon.Source = IconLoader.Load(members[0].Entry.Path, IconPx);
+            pile.Label.Text = kind;
+            pile.Root.ToolTip = $"{kind} · {members.Count} 项";
+            bool expanded = _expandedStack == kind;
+            pile.LabelPlate.Background = expanded ? Accent.LabelBrush : Brushes.Transparent;
+
+            var (l, t) = Take();
+            Canvas.SetLeft(pile.Root, Math.Round(l));
+            Canvas.SetTop(pile.Root, Math.Round(t));
+
+            foreach (var m in members)
+            {
+                if (expanded)
+                {
+                    m.Root.Visibility = Visibility.Visible;
+                    var (ml, mt) = Take();
+                    MoveIcon(m, ml, mt, animated);
+                }
+                else
+                {
+                    m.Root.Visibility = Visibility.Collapsed;
+                }
+            }
+        }
+
+        foreach (var k in _stackPiles.Keys.Where(k => !kindOrder.Contains(k)).ToList())
+        {
+            IconCanvas.Children.Remove(_stackPiles[k].Root);
+            _stackPiles.Remove(k);
+        }
+    }
+
+    private PileVisual GetOrCreatePile(string kind)
+    {
+        if (_stackPiles.TryGetValue(kind, out var existing)) return existing;
+
+        var img = new Image { Width = 60, Height = 60, SnapsToDevicePixels = true };
+        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+
+        // 堆叠观感：两片右上错位的半透明背板 + 左下顶层图标
+        var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
+        plate.Children.Add(new Border
+        {
+            Width = 54, Height = 54,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+        });
+        plate.Children.Add(new Border
+        {
+            Width = 57, Height = 57,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(Color.FromArgb(0x58, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(0, 6, 5, 0),
+        });
+        plate.Children.Add(new Border
+        {
+            Child = img,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Bottom,
+        });
+
+        var label = new TextBlock
+        {
+            Foreground = Brushes.White,
+            FontSize = 12,
+            FontFamily = LabelFontFamily,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+        };
+        TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
+        var labelPlate = new Border
+        {
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(5, 1, 5, 2),
+            Background = Brushes.Transparent,
+            Child = label,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        var stack = new StackPanel();
+        stack.Children.Add(plate);
+        stack.Children.Add(labelPlate);
+        var root = new Border
+        {
+            Width = CellW,
+            Child = stack,
+            Background = Brushes.Transparent,
+            Cursor = System.Windows.Input.Cursors.Hand,
+        };
+        string k = kind;
+        // 按下必须先截住：否则冒泡到画布启动框选并夺走鼠标捕获，Up 永远到不了 pile
+        root.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        root.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            _expandedStack = _expandedStack == k ? null : k;
+            LayoutAll(animated: true);
+        };
+
+        IconCanvas.Children.Add(root);
+        var pv = new PileVisual { Root = root, Icon = img, Label = label, LabelPlate = labelPlate };
+        _stackPiles[kind] = pv;
+        return pv;
     }
 
     /// <summary>新图标/整理时的排列顺序：默认名称，_arrangeOrder 指定时按日期/大小/类型。回收站置顶。</summary>
@@ -839,9 +1036,12 @@ public partial class MainWindow : Window
     // 菜单钉在按下点；否则微移后在空白处抬起会误出背景菜单）
     private (Point Pos, IconVisual? Icon, DateTime At) _rightPress;
 
+    /// <summary>参与交互的图标（叠放模式下堆内未展开项 Collapsed，不参与命中/选择/导航）。</summary>
+    private IEnumerable<IconVisual> VisibleIcons => _icons.Values.Where(i => i.Root.Visibility == Visibility.Visible);
+
     private IconVisual? IconAtPoint(Point pos)
     {
-        foreach (var iv in _icons.Values)
+        foreach (var iv in VisibleIcons)
         {
             double l = Canvas.GetLeft(iv.Root), t = Canvas.GetTop(iv.Root);
             if (double.IsNaN(l) || double.IsNaN(t)) continue;
@@ -1200,7 +1400,7 @@ public partial class MainWindow : Window
         _bandRect.Width = rect.Width;
         _bandRect.Height = rect.Height;
 
-        foreach (var iv in _icons.Values)
+        foreach (var iv in VisibleIcons)
         {
             var ivRect = new Rect(Canvas.GetLeft(iv.Root), Canvas.GetTop(iv.Root),
                                   iv.Root.ActualWidth, iv.Root.ActualHeight);
@@ -1362,8 +1562,8 @@ public partial class MainWindow : Window
 
     private void SelectAll()
     {
-        foreach (var iv in _icons.Values) SetSelected(iv, true);
-        _focusIcon ??= _icons.Values.FirstOrDefault();
+        foreach (var iv in VisibleIcons) SetSelected(iv, true);
+        _focusIcon ??= VisibleIcons.FirstOrDefault();
     }
 
     private void OnTextInput(object sender, TextCompositionEventArgs e)
@@ -1377,11 +1577,11 @@ public partial class MainWindow : Window
         _typeAheadAt = now;
         _typeAhead += text;
 
-        var match = _icons.Values
+        var match = VisibleIcons
             .OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase)
             .FirstOrDefault(i => i.Entry.DisplayName.StartsWith(_typeAhead, StringComparison.CurrentCultureIgnoreCase))
             // 单字母重复输入时在同首字母项间轮转
-            ?? _icons.Values.FirstOrDefault(i => i.Entry.DisplayName.StartsWith(text, StringComparison.CurrentCultureIgnoreCase));
+            ?? VisibleIcons.FirstOrDefault(i => i.Entry.DisplayName.StartsWith(text, StringComparison.CurrentCultureIgnoreCase));
         if (match != null) SelectOnly(match);
         e.Handled = true;
     }
@@ -1389,12 +1589,12 @@ public partial class MainWindow : Window
     /// <summary>方向键在网格上移动选中焦点：沿方向最近、垂直偏移惩罚更重（保证同列/同行优先）。</summary>
     private void MoveSelection(Key dir)
     {
-        var cur = _focusIcon ?? _selection.FirstOrDefault() ?? _icons.Values.FirstOrDefault();
+        var cur = _focusIcon ?? _selection.FirstOrDefault() ?? VisibleIcons.FirstOrDefault();
         if (cur == null) return;
         Point c = IconCenter(cur);
         IconVisual? best = null;
         double bestScore = double.MaxValue;
-        foreach (var iv in _icons.Values)
+        foreach (var iv in VisibleIcons)
         {
             if (iv == cur) continue;
             Point p = IconCenter(iv);
@@ -1562,7 +1762,7 @@ public partial class MainWindow : Window
     {
         static double L(IconVisual i) { var v = Canvas.GetLeft(i.Root); return double.IsNaN(v) ? 0 : v; }
         static double T(IconVisual i) { var v = Canvas.GetTop(i.Root); return double.IsNaN(v) ? 0 : v; }
-        var ordered = _icons.Values
+        var ordered = VisibleIcons
             .Where(i => !i.Entry.Path.StartsWith("::"))
             .OrderByDescending(i => Math.Round(L(i)))
             .ThenBy(T)
@@ -1806,7 +2006,7 @@ public partial class MainWindow : Window
     /// <summary>落点处的可接收图标：文件夹或回收站（拖拽的项自身除外）。</summary>
     private IconVisual? DropTargetIconAt(Point pos, string[] draggedPaths)
     {
-        foreach (var iv in _icons.Values)
+        foreach (var iv in VisibleIcons)
         {
             bool folderish = Directory.Exists(iv.Entry.Path) || iv.Entry.Path == DesktopItemProvider.RecycleBin;
             if (!folderish) continue;
@@ -1853,6 +2053,8 @@ public partial class MainWindow : Window
     /// </summary>
     private void RepositionAt(string[] paths, Point dropPos)
     {
+        // 叠放模式 = 自动整理，不接受手动落位（macOS 同款），也绝不写规范布局
+        if (Config.UseStacks) { LayoutAll(animated: true); return; }
         var ctx = ActiveDrag;
         Point anchorTL = ctx != null
             ? new Point(dropPos.X - ctx.GrabOffset.X, dropPos.Y - ctx.GrabOffset.Y)
@@ -1911,6 +2113,7 @@ public partial class MainWindow : Window
 
     private void PreassignDropPositions(List<string?> names, Point dropPos)
     {
+        if (Config.UseStacks) return; // 叠放模式不写规范布局，新文件直接进堆
         var occupied = _icons.Values.Where(o => o.Canon != null)
             .Select(o => ClampCell(CanonToCell(o.Canon!)))
             .ToHashSet();
