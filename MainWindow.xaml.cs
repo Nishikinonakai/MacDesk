@@ -104,7 +104,7 @@ public partial class MainWindow : Window
         if (!App.Transparent)
         {
             Background = Brushes.Black;
-            TryPaintWallpaper(); // 不透明模式：自己画壁纸当底
+            ApplyDesktopBackground(); // 壁纸镜像：按本显示器画系统壁纸当底，变化时跟随
         }
         // 先在屏幕外完整渲染，首帧后再挂到桌面层（见 OnContentRendered）
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -1809,28 +1809,114 @@ public partial class MainWindow : Window
         LayoutFile.Save();
     }
 
-    // ── 壁纸兜底（透明子窗口在某些机器黑屏时用 --opaque-wallpaper） ──
+    // ── 壁纸镜像 ──────────────────────────────────────────────
+    // 真透明不可行（WPF 分层子窗口不渲染，早期实测硬约束）→ 把系统当前壁纸按显示器
+    // 画成本层背景并跟随变化（Desktop.Init 监听 UserPreferenceChanged 调回来）。
+    // 限制：动态壁纸（Wallpaper Engine 等）只镜像不了，静态图/纯色/幻灯片当前帧都可以。
 
-    private void TryPaintWallpaper()
+    private Image? _wallpaper;
+
+    internal void ApplyDesktopBackground()
     {
         try
         {
-            var path = Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null) as string;
-            if (!string.IsNullOrEmpty(path) && File.Exists(path))
+            var info = Interop.DesktopWallpaper.ForMonitor(Monitor.Physical);
+
+            // 底色兼命中测试面（Fit/Center 的留边也用它）
+            RootGrid.Background = new SolidColorBrush(info?.BackColor ?? RegistryBackColor());
+
+            string? path = info?.ImagePath
+                ?? Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null) as string;
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
-                var img = new BitmapImage(new Uri(path));
-                RootGrid.Background = new ImageBrush(img) { Stretch = Stretch.UniformToFill };
+                RemoveWallpaperImage();
+                Log.Write($"[{MonKey}] wallpaper: solid color");
                 return;
             }
-            // 纯色壁纸：读系统桌面背景色（"R G B"）
+
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.UriSource = new Uri(path);
+            bmp.CacheOption = BitmapCacheOption.OnLoad; // 读完即关文件，壁纸文件不被锁
+            bmp.EndInit();
+            bmp.Freeze();
+
+            int pos = info?.Position ?? Interop.DesktopWallpaper.PosFill;
+            if (pos == Interop.DesktopWallpaper.PosTile)
+            {
+                RemoveWallpaperImage();
+                RootGrid.Background = new ImageBrush(bmp)
+                {
+                    TileMode = TileMode.Tile,
+                    Stretch = Stretch.None,
+                    AlignmentX = AlignmentX.Left,
+                    AlignmentY = AlignmentY.Top,
+                    Viewport = new Rect(0, 0, bmp.Width, bmp.Height),
+                    ViewportUnits = BrushMappingMode.Absolute,
+                };
+                Log.Write($"[{MonKey}] wallpaper: {Path.GetFileName(path)} (tile)");
+                return;
+            }
+
+            BitmapSource src = bmp;
+            var stretch = Stretch.UniformToFill; // FILL（默认）
+            switch (pos)
+            {
+                case Interop.DesktopWallpaper.PosCenter: stretch = Stretch.None; break;
+                case Interop.DesktopWallpaper.PosStretch: stretch = Stretch.Fill; break;
+                case Interop.DesktopWallpaper.PosFit: stretch = Stretch.Uniform; break;
+                case Interop.DesktopWallpaper.PosSpan: src = SpanCrop(bmp); break; // 裁本屏那块再铺满
+            }
+
+            if (_wallpaper == null)
+            {
+                _wallpaper = new Image { IsHitTestVisible = false, SnapsToDevicePixels = true };
+                RenderOptions.SetBitmapScalingMode(_wallpaper, BitmapScalingMode.HighQuality);
+                RootGrid.Children.Insert(0, _wallpaper); // IconCanvas 之下
+            }
+            _wallpaper.Source = src;
+            _wallpaper.Stretch = stretch;
+            Log.Write($"[{MonKey}] wallpaper: {Path.GetFileName(path)} pos={pos}");
+        }
+        catch (Exception ex) { Log.Write("wallpaper apply failed: " + ex.Message); }
+    }
+
+    private void RemoveWallpaperImage()
+    {
+        if (_wallpaper == null) return;
+        RootGrid.Children.Remove(_wallpaper);
+        _wallpaper = null;
+    }
+
+    private static Color RegistryBackColor()
+    {
+        try
+        {
             if (Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Colors", "Background", null) is string rgb)
             {
                 var p = rgb.Split(' ');
-                if (p.Length == 3)
-                    RootGrid.Background = new SolidColorBrush(
-                        Color.FromRgb(byte.Parse(p[0]), byte.Parse(p[1]), byte.Parse(p[2])));
+                if (p.Length == 3) return Color.FromRgb(byte.Parse(p[0]), byte.Parse(p[1]), byte.Parse(p[2]));
             }
         }
-        catch { /* 兜底失败保持黑底 */ }
+        catch { }
+        return Colors.Black;
+    }
+
+    /// <summary>Span 模式：系统把一张图 cover 整个虚拟桌面，本窗口取自己显示器那一块。</summary>
+    private BitmapSource SpanCrop(BitmapSource img)
+    {
+        double vx = Native.GetSystemMetrics(76), vy = Native.GetSystemMetrics(77);   // SM_X/YVIRTUALSCREEN
+        double vw = Native.GetSystemMetrics(78), vh = Native.GetSystemMetrics(79);   // SM_CX/CYVIRTUALSCREEN
+        if (vw < 1 || vh < 1) return img;
+        double scale = Math.Max(vw / img.PixelWidth, vh / img.PixelHeight);
+        double offX = (img.PixelWidth * scale - vw) / 2, offY = (img.PixelHeight * scale - vh) / 2;
+        int x = (int)Math.Max(0, (Monitor.Physical.Left - vx + offX) / scale);
+        int y = (int)Math.Max(0, (Monitor.Physical.Top - vy + offY) / scale);
+        int w = (int)Math.Min(img.PixelWidth - x, Monitor.Physical.Width / scale);
+        int h = (int)Math.Min(img.PixelHeight - y, Monitor.Physical.Height / scale);
+        if (w < 1 || h < 1) return img;
+        var crop = new CroppedBitmap(img, new Int32Rect(x, y, w, h));
+        crop.Freeze();
+        return crop;
     }
 }

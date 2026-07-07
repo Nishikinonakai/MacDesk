@@ -375,3 +375,21 @@ SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可
   自愈）。真机：拖出 550px 后 Esc，图标精确回原位、全不透明、无残影、无漂移。
 - README 同步：v3 锚距模型描述（旧文还写着 0–1 归一化坐标）、菜单序列化架构、设置
   GUI、深色菜单、LE 项、标签中间省略、回弹动画。
+
+## 2026-07-07 午 II：壁纸镜像（机主问"可以换壁纸了吗"，真机双屏验证）
+
+- **真透明依旧不可行**（WPF 分层子窗口不渲染，早期实测硬约束不变）。达成目标的正确路线
+  = **壁纸镜像**：`Interop/DesktopWallpaper.cs` 包 IDesktopWallpaper（Win8+ COM），按本窗口
+  显示器物理矩形匹配 monitorID（GetMonitorRECT 对号入座；未点亮的历史显示器查询会失败，
+  跳过即可），取每屏壁纸路径 + 适配模式 + 背景色。
+- **渲染**：RootGrid.Background = 系统背景色（兼命中测试面 + Fit/Center 留边色），壁纸画在
+  IconCanvas 之下的 Image 元素（IsHitTestVisible=false，命中自然落回 RootGrid）。适配模式
+  全映射：FILL→UniformToFill、FIT→Uniform、STRETCH→Fill、CENTER→None、TILE→ImageBrush
+  平铺（绝对 Viewport）、SPAN→按虚拟桌面 cover 几何裁本屏那块（CroppedBitmap）再铺满。
+  BitmapCacheOption.OnLoad 读完即关（不锁壁纸文件）。
+- **跟随变化**：SystemEvents.UserPreferenceChanged（Desktop/General 类别，包装
+  WM_SETTINGCHANGE）+ 400ms 防抖 → 全窗口 ApplyDesktopBackground。真机实测：
+  SPI_SETDESKWALLPAPER 广播后 ~1s 双屏（1080p+4K@225%）各自 FILL 正确渲染 img0.jpg；
+  还原纯色同样秒级跟回（像素级验证 teal 回归）。幻灯片每次切换同样触发跟随。
+- 背景菜单 +"更换壁纸（个性化）…"（0x700C → ms-settings:personalization-background）。
+- **限制**：动态壁纸（Wallpaper Engine 等）无法镜像——那需要真透明/合成层大手术（backlog）。

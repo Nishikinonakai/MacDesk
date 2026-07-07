@@ -57,6 +57,24 @@ internal static class Desktop
             _fsDebounce.Stop();
             _fsDebounce.Start();
         });
+
+        // 壁纸变化跟随（SystemEvents 包装 WM_SETTINGCHANGE；换壁纸/换适配模式/幻灯片切换都会来）
+        var wpDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        wpDebounce.Tick += (_, _) =>
+        {
+            wpDebounce.Stop();
+            foreach (var w in Windows) w.ApplyDesktopBackground();
+        };
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += (_, e) =>
+        {
+            if (e.Category is Microsoft.Win32.UserPreferenceCategory.Desktop
+                           or Microsoft.Win32.UserPreferenceCategory.General)
+                System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+                {
+                    wpDebounce.Stop();
+                    wpDebounce.Start();
+                });
+        };
     }
 
     /// <summary>图标的有效规范位置（无视归属显示器是否在场）。</summary>

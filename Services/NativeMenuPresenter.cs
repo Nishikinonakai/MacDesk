@@ -123,7 +123,7 @@ internal static class NativeMenuPresenter
     private const uint ID_ARRANGE = 0x7001, ID_UNDO = 0x7002, ID_TOGGLE = 0x7003, ID_QUIT = 0x7004,
                        ID_AUTOSTART = 0x7005, ID_SORT_NAME = 0x7006, ID_SORT_DATE = 0x7007,
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
-                       ID_SETTINGS = 0x700B;
+                       ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C;
     private const uint ID_D_OPEN = 0x7101, ID_D_OPENWITH = 0x7102, ID_D_CUT = 0x7103, ID_D_COPY = 0x7104,
                        ID_D_RENAME = 0x7105, ID_D_DELETE = 0x7106, ID_D_PROPS = 0x7107;
 
@@ -149,6 +149,7 @@ internal static class NativeMenuPresenter
         Cmd(ID_FREE, "自由摆放（不吸附网格）", Settings.Load().FreePlacement),
         Cmd(ID_TOGGLE, "显示/隐藏原生图标"),
         Cmd(ID_AUTOSTART, "开机自启", Autostart.IsEnabled()),
+        Cmd(ID_PERSONALIZE, "更换壁纸（个性化）…"),
         Cmd(ID_SETTINGS, "MacDesk 设置…"),
         Cmd(ID_QUIT, "退出 MacDesk (Ctrl+Alt+Q)"),
     };
@@ -245,6 +246,14 @@ internal static class NativeMenuPresenter
             case ID_SORT_KIND: CommandChannel.Signal("SortKind"); return true;
             case ID_QUIT: CommandChannel.Signal("Quit"); return true;
             case ID_SETTINGS: CommandChannel.Signal("OpenSettings"); return true;
+            case ID_PERSONALIZE:
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                        "ms-settings:personalization-background") { UseShellExecute = true });
+                }
+                catch (Exception ex) { Log.Write("open personalization failed: " + ex.Message); }
+                return true;
             case ID_D_OPEN: CommandChannel.Signal("OpenSelection"); return true;
             case ID_D_CUT: CommandChannel.Signal("CutSelection"); return true;
             case ID_D_COPY: CommandChannel.Signal("CopySelection"); return true;
