@@ -128,6 +128,16 @@ public partial class App : Application
             return; // 进程存活，host 循环在专用线程里跑
         }
 
+        // 壁纸透传最小验证窗（--ulwtest）：ULW 子窗口渲染/输入/穿透三命题，详见 Services/UlwSpike.cs
+        if (e.Args.Contains("--ulwtest"))
+        {
+            var t = new Thread(() => { Services.UlwSpike.Run(); Dispatcher.BeginInvoke(() => Shutdown()); })
+                { IsBackground = true };
+            t.SetApartmentState(ApartmentState.STA);
+            t.Start();
+            return; // 进程存活，spike 消息循环在专用线程里跑
+        }
+
         // 菜单结构侦察：构建 bg + 指定文件菜单（不显示），结构树写日志
         // --menudump [path ...]
         int md = Array.IndexOf(e.Args, "--menudump");
