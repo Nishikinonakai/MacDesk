@@ -61,9 +61,19 @@ Windows desktop does.
   dies, and re-attaches to the fresh shell. Resolution changes recover the same
   way.
 - **Start on boot** — a checkbox in the background menu (or `--enable-autostart`).
-- **Settings window** ("MacDesk 设置…" in the background menu) — free placement,
-  autostart, menu mode, and the context-menu blacklist, all editable in a GUI
-  (stored in `%LOCALAPPDATA%\MacDesk\settings.json`).
+- **macOS-style Settings window** ("MacDesk 设置…" in the background menu) —
+  sidebar + content pages like macOS System Settings: autostart, menu mode,
+  **accent color** (changes selection/marquee colors live, macOS palette),
+  context-menu blacklist with a picker fed by recently seen menu items, native
+  layout re-import, and an About page with a manual GitHub-Releases update
+  check (the app's only network access — no backend, no telemetry). Stored in
+  `%LOCALAPPDATA%\MacDesk\settings.json`.
+- **First-run onboarding** — on a fresh install MacDesk asks whether to import
+  your existing desktop arrangement (read from the hidden native icon list) or
+  start with a clean mac-style top-right flow.
+- **Restrained desktop menu**, macOS-style: shell items plus Clean Up /
+  Sort By (None = free placement) / Undo / Change Wallpaper / Settings —
+  everything else lives in Settings.
 - **High-DPI aware** — correct rendering at 100 %–225 % and mixed-DPI transitions.
 
 ## Keyboard shortcuts
@@ -103,9 +113,10 @@ MacDesk.exe --enable-autostart [mode flags]   # register HKCU\...\Run
 MacDesk.exe --disable-autostart
 ```
 
-To quit: the **Quit** item in the desktop background menu, **Ctrl+Alt+Q**, or
-`--quit`. Because MacDesk is meant to be always-on, force-killing the main
-process makes the watchdog relaunch it — use one of the above to stop it fully.
+To quit: the **Quit** button in MacDesk Settings (background menu →
+"MacDesk 设置…" → 通用), **Ctrl+Alt+Q**, or `--quit`. Because MacDesk is meant
+to be always-on, force-killing the main process makes the watchdog relaunch
+it — use one of the above to stop it fully.
 
 Data files (per user, `%LOCALAPPDATA%\MacDesk\`):
 

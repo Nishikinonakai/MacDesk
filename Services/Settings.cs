@@ -19,6 +19,9 @@ internal sealed class Settings
     /// TrackPopupMenu 路径（settle-wait+重试），新路径出问题时的免重建逃生口。</summary>
     public bool MenuInMainProcess { get; set; } = true;
 
+    /// <summary>强调色 key（见 Accent.Palette），影响选中标签/框选颜色。</summary>
+    public string AccentColor { get; set; } = "blue";
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -39,6 +42,8 @@ internal sealed class Settings
                         .Select(e => e.GetString()!)
                         .ToList();
                 if (doc.RootElement.TryGetProperty("MenuInMainProcess", out var mm)) s.MenuInMainProcess = mm.GetBoolean();
+                if (doc.RootElement.TryGetProperty("AccentColor", out var ac) && ac.ValueKind == JsonValueKind.String)
+                    s.AccentColor = ac.GetString()!;
             }
         }
         catch { }
@@ -50,7 +55,8 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess }, new JsonSerializerOptions { WriteIndented = true }));
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor },
+                new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
     }

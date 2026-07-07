@@ -105,13 +105,12 @@ internal static class NativeDesktopLayout
     }
 
     /// <summary>
-    /// OOBE 首启导入：布局档为空时，把原生桌面的现有摆放转成规范锚距——新用户装上
-    /// MacDesk 图标保持原位，而不是被重排成右上列流。按显示名匹配桌面项（含回收站）。
+    /// 把原生桌面摆放转成规范锚距写入布局档。OOBE 首启询问后调用，也供设置里
+    /// "导入原生桌面布局"手动触发（会覆盖同名图标的现有位置）。按显示名匹配（含回收站）。
     /// </summary>
-    public static void ImportIfFirstRun(List<MonitorInfo> monitors, LayoutStore layout, IReadOnlyList<DesktopEntry> entries)
+    public static int Import(List<NativeIcon> native, List<MonitorInfo> monitors, LayoutStore layout, IReadOnlyList<DesktopEntry> entries)
     {
-        var native = Read();
-        if (native.Count == 0) { Log.Write("OOBE import: no native icons readable"); return; }
+        if (native.Count == 0) { Log.Write("native layout import: nothing to import"); return 0; }
 
         // 图标区左上角 → 中心：native 网格间距的一半（LOGPIXELS 相关，读系统值兜底 75×100）
         int spacingX = Native.GetSystemMetrics(38), spacingY = Native.GetSystemMetrics(39); // SM_CX/CYICONSPACING
@@ -140,6 +139,7 @@ internal static class NativeDesktopLayout
             imported++;
         }
         layout.Save();
-        Log.Write($"OOBE import: {imported}/{native.Count} native icon positions adopted");
+        Log.Write($"native layout import: {imported}/{native.Count} icon positions adopted");
+        return imported;
     }
 }

@@ -51,14 +51,22 @@ internal static class Desktop
         Config = Settings.Load();
         Provider = new DesktopItemProvider();
 
-        // OOBE 首启导入：布局档为空（新装）时把原生桌面的现有摆放转成规范锚距，
-        // 装上 MacDesk 图标保持原位而不是被重排（机主点头过的开源发布项）
+        // OOBE 首启：布局档为空（新装）时询问是否导入原生桌面的现有摆放
         if (Layout.IsEmpty)
         {
             try
             {
                 if (Interop.DesktopLayer.EnsureDiscovered())
-                    Interop.NativeDesktopLayout.ImportIfFirstRun(Monitors, Layout, Provider.Enumerate());
+                {
+                    var native = Interop.NativeDesktopLayout.Read();
+                    if (native.Count > 0 && System.Windows.MessageBox.Show(
+                            $"欢迎使用 MacDesk！\n\n检测到桌面上已有 {native.Count} 个图标。要保留它们现在的摆放吗？\n\n" +
+                            "选择“是”导入现有布局；选择“否”将从整洁的 mac 式右上排列开始。",
+                            "MacDesk 首次启动",
+                            System.Windows.MessageBoxButton.YesNo,
+                            System.Windows.MessageBoxImage.Question) == System.Windows.MessageBoxResult.Yes)
+                        Interop.NativeDesktopLayout.Import(native, Monitors, Layout, Provider.Enumerate());
+                }
             }
             catch (Exception ex) { Log.Write("OOBE import failed: " + ex.Message); }
         }
@@ -93,6 +101,12 @@ internal static class Desktop
         var wpPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
         wpPoll.Tick += (_, _) => { foreach (var w in Windows) w.ApplyDesktopBackground(); };
         wpPoll.Start();
+
+        // 强调色切换 → 全窗口刷新选中态视觉
+        Accent.Changed += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var w in Windows) w.RefreshAccent();
+        });
     }
 
     /// <summary>图标的有效规范位置（无视归属显示器是否在场）。</summary>

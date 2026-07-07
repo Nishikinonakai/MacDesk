@@ -433,3 +433,36 @@ SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可
   （如 P&roperties）会让不含 & 的黑名单词失配——StripBlacklisted 比对前先剥 &**。
 - 部署插曲：scp 忘了 publish/ 前缀，旧二进制被重启当新版测（procs 正常但行为是旧的）——
   scp 后必须确认 REDEPLOYED 无报错再下结论。
+
+## 2026-07-07 下午：设置 UI v2（mac 系统设置风）+ 强调色 + About/更新 + 菜单克制化 + App 图标（真机全验证）
+
+机主大工单：性能体检、现代化设置 UI（照 macOS 系统设置的左侧栏+右内容）、强调色、
+About（明写由 Claude 开发）、GitHub Releases 检查更新、右键菜单克制化（借鉴 macOS）、
+OOBE 首启询问、App 图标。全部交付：
+
+- **性能体检结论：无问题**。空闲 CPU 三进程 0%（壁纸 8s 轮询/FS 监听零负担），内存
+  主进程 90MB / host 44MB（第三方扩展的隔离代价）/ 看门狗 4MB。
+- **App 图标**：PIL 生成 Big Sur 风圆角方块（蓝紫渐变 + 右上锚定图标网格 + mac 选中框
+  意象），`Assets/macdesk.ico`（多尺寸）+ csproj ApplicationIcon + 设置窗口 pack URI 图标。
+  版本号起 `<Version>0.9.0</Version>`。
+- **设置 UI v2**（`SettingsWindow.cs` 全重写）：左侧栏（通用/外观/右键菜单/关于）+ 右内容
+  卡片（白卡圆角、行内提示、分隔线，macOS 系统设置观感）。通用 = 自启/菜单模式/导入原生
+  布局（手动触发，确认后覆盖）/显示原生图标（调试用途注明）/红字退出钮。外观 = 强调色
+  8 色盘（macOS 调色板，即时生效）+ 壁纸"跟随系统"说明。右键菜单 = 黑名单（列表+目录
+  下拉+手输）。关于 = 大图标 + 版本 + **"由 Claude 开发 · Built by Claude (Anthropic)"** +
+  "无后端·无遥测·除手动检查更新外不联网" + GitHub/检查更新按钮。
+- **强调色**（`Services/Accent.cs`）：macOS 浅色调色板 8 色（蓝=项目原 mac 选中蓝 2B63D9），
+  选中标签底色/框选填充与描边全部走 Accent 派生画刷；切换即时（Accent.Changed → 全窗口
+  RefreshAccent 刷新已选中项，新选中/新框选自然取新色）。settings.json `AccentColor`。
+  真机：紫色一点，选中标签立即变紫。
+- **检查更新**（`Services/UpdateCheck.cs`）：GitHub Releases latest tag vs 程序集版本，
+  仅手动触发（About 页按钮），失败优雅降级（真机实测私有仓库报"网络问题或仓库未公开"）。
+- **右键菜单克制化（macOS 语义）**：自定义区只剩 整理 / 排序方式▸（**"无（自由摆放）"
+  = macOS Sort By > None，进子菜单带勾选**）/ 撤销 / 更换壁纸… / MacDesk 设置…。
+  自启、退出、显示原生图标全部迁入设置（退出保留 Ctrl+Alt+Q）。旧 host 路径同构更新。
+- **OOBE 首启询问**：布局档为空时 MessageBox 问"检测到 N 个图标，要保留摆放吗"，
+  是=导入 / 否=整洁开局（否后首次 LayoutAll 落 Canon 存档，不会反复询问）。真机全流程
+  验证（含选"否"的列流开局与布局档还原逐像素回归）。
+- **"显示/隐藏原生图标"定性**：当前不透明架构下原生图标被我们全盖住，开关视觉无效但
+  不能删——将来壁纸透传（真透明）时必须靠它藏原生层。已注明"调试用"住进设置。
+- Use Stacks：机主想要，已答复可做但属大件（分堆渲染/展开交互/布局语义），单独排期。

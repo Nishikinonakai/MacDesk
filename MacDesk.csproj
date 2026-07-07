@@ -11,6 +11,13 @@
     <AssemblyName>MacDesk</AssemblyName>
     <RootNamespace>MacDesk</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets/macdesk.ico</ApplicationIcon>
+    <Version>0.9.0</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\macdesk.ico" />
+    <Resource Include="Assets\macdesk_1024.png" />
+  </ItemGroup>
 
 </Project>

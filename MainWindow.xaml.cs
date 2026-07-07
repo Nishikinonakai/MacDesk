@@ -795,7 +795,7 @@ public partial class MainWindow : Window
     // ── 选择模型 ──────────────────────────────────────────────
 
     private static readonly SolidColorBrush SelIconBg = new(Color.FromArgb(0x52, 0x00, 0x00, 0x00));
-    private static readonly SolidColorBrush SelLabelBg = new(Color.FromArgb(0xE6, 0x2B, 0x63, 0xD9)); // mac 选中蓝
+    private static SolidColorBrush SelLabelBg => Accent.LabelBrush; // 强调色（设置里可换，默认 mac 选中蓝）
 
     private void SetSelected(IconVisual iv, bool on)
     {
@@ -1172,8 +1172,8 @@ public partial class MainWindow : Window
         _bandOrigin = e.GetPosition(IconCanvas);
         _bandRect = new System.Windows.Shapes.Rectangle
         {
-            Fill = new SolidColorBrush(Color.FromArgb(0x30, 0x2B, 0x63, 0xD9)),
-            Stroke = new SolidColorBrush(Color.FromArgb(0x90, 0x2B, 0x63, 0xD9)),
+            Fill = Accent.BandFill,
+            Stroke = Accent.BandStroke,
             StrokeThickness = 1,
             RadiusX = 2, RadiusY = 2,
         };
@@ -1734,6 +1734,13 @@ public partial class MainWindow : Window
         bool lit = on || _selection.Contains(iv); // 取消高亮时恢复真实选中态视觉
         iv.IconPlate.Background = lit ? SelIconBg : Brushes.Transparent;
         iv.LabelPlate.Background = lit ? SelLabelBg : Brushes.Transparent;
+    }
+
+    /// <summary>强调色变化后刷新当前选中态视觉（新选中自然用新色，这里补已选中的）。</summary>
+    internal void RefreshAccent()
+    {
+        foreach (var iv in _selection) iv.LabelPlate.Background = SelLabelBg;
+        if (_bandRect != null) { _bandRect.Fill = Accent.BandFill; _bandRect.Stroke = Accent.BandStroke; }
     }
 
     private void ClearSpring()

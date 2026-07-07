@@ -163,7 +163,9 @@ internal static class NativeMenuPresenter
     private static MenuSnapshot.Item Cmd(uint id, string text, bool check = false) =>
         new() { Id = id, Text = text, Checked = check };
 
-    /// <summary>背景菜单尾部的 MacDesk 自定义项（追加到 host 序列化来的 shell 项之后）。</summary>
+    /// <summary>背景菜单尾部的 MacDesk 自定义项（macOS 克制风格，机主定案）：
+    /// 只留整理/排序/壁纸/设置四类；自启、退出、原生图标开关全部住进设置窗口。
+    /// "无（自由摆放）"进排序方式子菜单 = macOS "Sort By > None" 同款语义。</summary>
     public static List<MenuSnapshot.Item> CustomBackgroundItems() => new()
     {
         Sep(),
@@ -173,17 +175,16 @@ internal static class NativeMenuPresenter
             Text = "排序方式",
             Children = new List<MenuSnapshot.Item>
             {
+                Cmd(ID_FREE, "无（自由摆放）", MacDesk.Desktop.Config.FreePlacement),
+                Sep(),
                 Cmd(ID_SORT_NAME, "名称"), Cmd(ID_SORT_DATE, "修改日期"),
                 Cmd(ID_SORT_SIZE, "大小"), Cmd(ID_SORT_KIND, "类型"),
             },
         },
         Cmd(ID_UNDO, "撤销上次整理"),
-        Cmd(ID_FREE, "自由摆放（不吸附网格）", Settings.Load().FreePlacement),
-        Cmd(ID_TOGGLE, "显示/隐藏原生图标"),
-        Cmd(ID_AUTOSTART, "开机自启", Autostart.IsEnabled()),
-        Cmd(ID_PERSONALIZE, "更换壁纸（个性化）…"),
+        Sep(),
+        Cmd(ID_PERSONALIZE, "更换壁纸…"),
         Cmd(ID_SETTINGS, "MacDesk 设置…"),
-        Cmd(ID_QUIT, "退出 MacDesk (Ctrl+Alt+Q)"),
     };
 
     /// <summary>降级文件菜单（探针判定该类型原生菜单必崩时）。动词与旧 host 版一致。</summary>
