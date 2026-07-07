@@ -17,41 +17,63 @@ internal static class WallpaperEngine
 {
     private const string RenderWindowClass = "WPEDesktopDX11Window";
 
-    /// <summary>找目标显示器的 WE 渲染窗：先搜 Progman 的各 WorkerW（未收编的），
-    /// 再搜 DefView（上一任实例收编后没来得及还原的），按屏幕矩形匹配。</summary>
+    /// <summary>找目标显示器的壁纸渲染窗：先搜 Progman 的各 WorkerW（未收编的），
+    /// 再搜 DefView（上一任实例收编后没来得及还原的），按屏幕矩形匹配。
+    /// **通用发现**（机主实测反馈驱动）：WE 的 Web/Application 型壁纸窗口类名不是
+    /// WPEDesktopDX11Window（点击交互型多为 Web 型，之前被漏掉只能镜像兜底）；Lively 等
+    /// 其他壁纸软件同理。判据改为"住在壁纸层（WorkerW）里、盖满显示器、可见、且不属于
+    /// Explorer/我们自己的进程"——住进 WorkerW 的窗口本身就是壁纸渲染器的定义。
+    /// WE 场景型类名仍优先（多候选时最可信）。</summary>
     public static IntPtr FindForMonitor(Native.RECT physical)
     {
-        foreach (var w in EnumRenderWindows())
+        if (!DesktopLayer.EnsureDiscovered()) return IntPtr.Zero;
+        GetWindowThreadProcessId(DesktopLayer.ProgmanHwnd, out uint explorerPid);
+        uint ourPid = (uint)Environment.ProcessId;
+
+        IntPtr generic = IntPtr.Zero;
+        foreach (var w in EnumCandidates())
         {
             GetWindowRect(w, out var r);
-            // WE 偶有 1px 级别的对齐出入，宽松匹配
-            if (Math.Abs(r.Left - physical.Left) <= 2 && Math.Abs(r.Top - physical.Top) <= 2 &&
-                Math.Abs(r.Width - physical.Width) <= 4 && Math.Abs(r.Height - physical.Height) <= 4)
-                return w;
+            // 偶有 1px 级别的对齐出入，宽松匹配
+            if (Math.Abs(r.Left - physical.Left) > 2 || Math.Abs(r.Top - physical.Top) > 2 ||
+                Math.Abs(r.Width - physical.Width) > 4 || Math.Abs(r.Height - physical.Height) > 4)
+                continue;
+            GetWindowThreadProcessId(w, out uint pid);
+            if (pid == explorerPid || pid == ourPid || !Native.IsWindowVisible(w)) continue;
+            if (ClassNameOf(w) == RenderWindowClass) return w; // WE 场景型：确定性命中
+            if (generic == IntPtr.Zero) generic = w;           // 枚举顺序 = z 序，取最上面的
         }
-        return IntPtr.Zero;
+        return generic;
     }
 
-    private static IEnumerable<IntPtr> EnumRenderWindows()
+    /// <summary>诊断描述：类名 + 进程名（收编非 WE 场景窗时日志里认得出是谁家的）。</summary>
+    public static string Describe(IntPtr w)
     {
-        if (!DesktopLayer.EnsureDiscovered()) yield break;
-        // Progman 下的所有 WorkerW（WE 惯用宿主）
+        GetWindowThreadProcessId(w, out uint pid);
+        string proc = "?";
+        try { proc = System.Diagnostics.Process.GetProcessById((int)pid).ProcessName; } catch { }
+        return $"class={ClassNameOf(w)} proc={proc}";
+    }
+
+    private static IEnumerable<IntPtr> EnumCandidates()
+    {
+        // Progman 下的所有 WorkerW（壁纸软件的惯用宿主层）
         IntPtr worker = IntPtr.Zero;
         while ((worker = Native.FindWindowEx(DesktopLayer.ProgmanHwnd, worker, "WorkerW", null)) != IntPtr.Zero)
-            foreach (var w in ChildrenOfClass(worker, RenderWindowClass))
+            foreach (var w in ChildrenOf(worker))
                 yield return w;
         // DefView（我们收编后的位置；继任实例接手时在这找到）
         if (DesktopLayer.DefViewHwnd != IntPtr.Zero)
-            foreach (var w in ChildrenOfClass(DesktopLayer.DefViewHwnd, RenderWindowClass))
+            foreach (var w in ChildrenOf(DesktopLayer.DefViewHwnd))
                 yield return w;
     }
 
-    private static IEnumerable<IntPtr> ChildrenOfClass(IntPtr parent, string cls)
+    private static IEnumerable<IntPtr> ChildrenOf(IntPtr parent)
     {
         IntPtr c = GetWindow(parent, GW_CHILD);
         while (c != IntPtr.Zero)
         {
-            if (ClassNameOf(c) == cls) yield return c;
+            yield return c;
             c = GetWindow(c, GW_HWNDNEXT);
         }
     }
@@ -93,4 +115,5 @@ internal static class WallpaperEngine
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr h, out Native.RECT r);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }

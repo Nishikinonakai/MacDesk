@@ -397,6 +397,7 @@ public partial class MainWindow : Window
                 actual = dx / 96.0;
 
             double k = actual / believed;
+            _dpiK = actual; // BitmapCache 的 RenderAtScale 用（高 DPI 屏缓存要按物理倍率烙）
             RootGrid.LayoutTransform = Math.Abs(k - 1) < 0.001 ? null : new ScaleTransform(k, k);
 
             // WPF 对重挂子窗口的 WM_SIZE 处理不可靠（布局尺寸会卡旧值）→ 显式按它自己的
@@ -562,6 +563,7 @@ public partial class MainWindow : Window
             root.ToolTip = new ToolTip { Content = en.DisplayName };
 
         var iv = new IconVisual { Entry = en, Root = root, IconPlate = iconPlate, LabelPlate = labelPlate, Label = label };
+        ApplyCacheMode(root); // 动态壁纸模式下烙阴影进缓存（帧成本大头）
         root.MouseLeftButtonDown += (s, e) => OnIconMouseDown(iv, e);
         root.MouseMove += (s, e) => OnIconMouseMove(iv, e);
         root.MouseLeftButtonUp += (s, e) => OnIconMouseUp(iv, e);
@@ -1119,6 +1121,7 @@ public partial class MainWindow : Window
             CardGroup = cardGroup, Label = label, LabelPlate = labelPlate,
         };
         _stackPiles[kind] = pv;
+        ApplyCacheMode(root);
 
         // 刮擦预览（macOS scrub）= 悬停 + 滚轮/双指滚动轮换前层图标（机主纠正：悬停移动
         // 不该轮换）。零额外取图——成员桌面图标本就常驻加载了 Image.Source，直接借用。
@@ -1748,7 +1751,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OnCanvasMouseUp(object sender, MouseButtonEventArgs e) => EndBand();
+    private void OnCanvasMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        // 点击型交互壁纸试验（机主反馈驱动）：空白处原地点击（非框选拖拽）转发给收编的
+        // 壁纸窗——WE 收不到真实鼠标消息（我们的输入层在上面），Post 一对 down/up 过去，
+        // 壁纸不处理也无害。仅左键；框选/拖拽不转发。
+        if (_bandActive && _weWindow != IntPtr.Zero && Native.IsWindow(_weWindow))
+        {
+            var p = e.GetPosition(IconCanvas);
+            if (Math.Abs(p.X - _bandOrigin.X) < 4 && Math.Abs(p.Y - _bandOrigin.Y) < 4)
+            {
+                var screen = RootGrid.PointToScreen(e.GetPosition(RootGrid)); // 物理 px
+                int cx = (int)screen.X - Monitor.Physical.Left;
+                int cy = (int)screen.Y - Monitor.Physical.Top;
+                IntPtr lp = (IntPtr)((cy << 16) | (cx & 0xFFFF));
+                Native.PostMessage(_weWindow, 0x0201 /*WM_LBUTTONDOWN*/, (IntPtr)0x0001 /*MK_LBUTTON*/, lp);
+                Native.PostMessage(_weWindow, 0x0202 /*WM_LBUTTONUP*/, IntPtr.Zero, lp);
+            }
+        }
+        EndBand();
+    }
 
     /// <summary>结束/清理框选（无论正常松手还是捕获被打断）。可重入。</summary>
     private void EndBand()
@@ -2613,16 +2635,61 @@ public partial class MainWindow : Window
     internal static bool HandoffRetiring;
 
     private UlwPresenter? _presenter;
-    private IntPtr _weWindow;              // 收编的 WE 渲染窗（Zero = 非动态模式）
+    private IntPtr _weWindow;              // 收编的壁纸渲染窗（Zero = 非动态模式）
     private IntPtr _weOriginalParent;
     private int _weOriginalEx;
     private RenderTargetBitmap? _frameBitmap;
     private bool _pumpOn;
     private DateTime _pumpUntil;
     private DateTime _lastFramePush = DateTime.MinValue;
-    private double _frameCostMs = 5; // EMA；自适应节流，4K 下渲染贵就自动降帧率
+    private double _frameCostMs = 5; // EMA；自适应节流，渲染贵时自动降帧率
+    private double _dpiK = 1.0;      // 本显示器物理 DPI 倍率（CoverAndSync 现查）
+    private int _burstFrames;        // 帧泵诊断：本轮 burst 推了几帧
+    private double _burstCostMs;
     private DispatcherTimer? _frameHeartbeat;
     private DispatcherTimer? _renameCaretPump;
+
+    /// <summary>动态模式的帧成本控制：RTB 走软件光栅化，DropShadowEffect 的软件高斯模糊
+    /// 是帧成本的绝对大头（4K 真机实测 avg 1031ms/帧 = 完全不可用，机主反馈"帧率很低"）。
+    /// BitmapCache 在软件 RTB 路径不被复用（每帧重烙反而更贵，A/B 实测负优化）→ 动态模式
+    /// 直接摘掉子树里所有 Effect（观感：图标少一层淡阴影，动态壁纸上不明显），退出时恢复。
+    /// 镜像模式走原生 GPU 渲染，Effect 免费，全部保留。</summary>
+    private readonly Dictionary<FrameworkElement, Effect> _strippedEffects = new();
+
+    private void ApplyCacheMode(FrameworkElement el)
+    {
+        if (_presenter != null) StripEffects(el);
+        else RestoreEffects(el);
+    }
+
+    private void StripEffects(DependencyObject node)
+    {
+        if (node is FrameworkElement fe && fe.Effect != null)
+        {
+            _strippedEffects[fe] = fe.Effect;
+            fe.Effect = null;
+        }
+        int n = VisualTreeHelper.GetChildrenCount(node);
+        for (int i = 0; i < n; i++) StripEffects(VisualTreeHelper.GetChild(node, i));
+    }
+
+    private void RestoreEffects(DependencyObject node)
+    {
+        if (node is FrameworkElement fe && _strippedEffects.TryGetValue(fe, out var eff))
+        {
+            fe.Effect = eff;
+            _strippedEffects.Remove(fe);
+        }
+        int n = VisualTreeHelper.GetChildrenCount(node);
+        for (int i = 0; i < n; i++) RestoreEffects(VisualTreeHelper.GetChild(node, i));
+    }
+
+    private void ApplyCacheModeAll()
+    {
+        foreach (var iv in _icons.Values) ApplyCacheMode(iv.Root);
+        foreach (var pv in _stackPiles.Values) ApplyCacheMode(pv.Root);
+        if (_presenter == null) _strippedEffects.Clear(); // 已全数恢复，别攥着死引用
+    }
 
     /// <summary>按"设置开关 + WE 是否在本屏渲染"进入/退出动态壁纸模式。
     /// 调用点：挂载后（CoverAndSync）、设置切换、Desktop 8s 轮询（WE 启动检测）、心跳（WE 健康）。</summary>
@@ -2702,9 +2769,10 @@ public partial class MainWindow : Window
             _frameHeartbeat.Start();
         }
 
+        ApplyCacheModeAll();
         RenderFrame();
         PokeFrames(600);
-        Log.Write($"[{MonKey}] dynamic wallpaper ON we=0x{we:X} presenter=0x{_presenter!.Hwnd:X} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
+        Log.Write($"[{MonKey}] dynamic wallpaper ON we=0x{we:X} ({WallpaperEngine.Describe(we)}) presenter=0x{_presenter!.Hwnd:X} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
     }
 
     /// <summary>三层 z 序（presenter 顶、WE 中、WPF 底）+ 矩形复核。收编别家窗口，
@@ -2739,6 +2807,7 @@ public partial class MainWindow : Window
 
         _wallpaperSig = "";
         ApplyDesktopBackground(); // 回镜像路径（含 RootGrid 底色恢复）
+        ApplyCacheModeAll();      // 清 BitmapCache，回原生 GPU 渲染
         Log.Write($"[{MonKey}] dynamic wallpaper OFF (release={release})");
     }
 
@@ -2762,7 +2831,10 @@ public partial class MainWindow : Window
         _frameBitmap.Render(dv);
         _presenter.PushFrame(_frameBitmap);
 
-        _frameCostMs = _frameCostMs * 0.8 + (DateTime.UtcNow - t0).TotalMilliseconds * 0.2;
+        double cost = (DateTime.UtcNow - t0).TotalMilliseconds;
+        _frameCostMs = _frameCostMs * 0.8 + cost * 0.2;
+        _burstFrames++;
+        _burstCostMs += cost;
     }
 
     /// <summary>催帧：把帧泵维持到 holdMs 后（动画/交互期间持续推帧，静止自动停）。</summary>
@@ -2793,10 +2865,16 @@ public partial class MainWindow : Window
             CompositionTarget.Rendering -= OnPumpFrame;
             _pumpOn = false;
             RenderFrame(); // 收尾帧：动画终值定格
+            if (_burstFrames >= 5) // 交互级 burst 就记（帧成本是当前调优焦点）
+                Log.Write($"[{MonKey}] pump burst: {_burstFrames} frames avg {_burstCostMs / _burstFrames:F1}ms");
+            _burstFrames = 0;
+            _burstCostMs = 0;
             return;
         }
-        // 自适应节流：渲染成本的 4 倍为下限（4K 帧贵时自动降帧率，CPU 有界），上限 ~60fps
-        double minGap = Math.Clamp(_frameCostMs * 4, 15, 100);
+        // 自适应节流：渲染成本的 2 倍为间隔下限（帧贵自动降帧率，渲染占 UI 线程 ≤50%），
+        // 最快 ~60fps。**不设上限**——上限会在帧成本高时变成"强制高频渲染"烤死 UI 线程
+        //（4K avg 1031ms/帧 × 66ms 上限 = 交互全糊的元凶，真机实锤）
+        double minGap = Math.Max(15, _frameCostMs * 2);
         if ((now - _lastFramePush).TotalMilliseconds < minGap) return;
         _lastFramePush = now;
         RenderFrame();
