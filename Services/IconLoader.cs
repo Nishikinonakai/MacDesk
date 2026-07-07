@@ -5,10 +5,28 @@ using MacDesk.Interop;
 
 namespace MacDesk.Services;
 
-/// <summary>IShellItemImageFactory 取高分辨率图标/缩略图（含 alpha）。</summary>
+/// <summary>IShellItemImageFactory 取高分辨率图标/缩略图（含 alpha）。
+/// 按（扩展名, 尺寸）共享缓存：千文件压测实锤内存大头是每文件 ~0.6MB 的独立位图
+/// （1000 个 .txt 各存一份同样的图标）。共享路径强制 SIIGBF_ICONONLY——类型图标由
+/// 扩展名决定，绝不会把 A 文件的内容缩略图错共享给 B；有缩略图价值的类型（图片/视频/
+/// PDF）和每文件图标类型（exe/lnk/ico…）+ 目录 + 虚拟项保持逐文件加载不缓存。</summary>
 internal static class IconLoader
 {
     private const int SIIGBF_BIGGERSIZEOK = 0x01;
+    private const int SIIGBF_ICONONLY = 0x04;
+
+    /// <summary>图标随文件本体变化的类型：共享会张冠李戴。</summary>
+    private static readonly HashSet<string> PerFileIcon = new(StringComparer.OrdinalIgnoreCase)
+    { ".exe", ".lnk", ".url", ".ico", ".cur", ".ani", ".scr", ".appref-ms", ".msi", ".dll" };
+
+    /// <summary>保留内容缩略图的类型（Explorer 同款观感）：逐文件加载不缓存。</summary>
+    private static readonly HashSet<string> ThumbnailExts = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".tif", ".tiff", ".svg",
+        ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".pdf",
+    };
+
+    private static readonly Dictionary<string, ImageSource?> _shared = new(StringComparer.OrdinalIgnoreCase);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SIZE { public int cx, cy; }
@@ -36,13 +54,30 @@ internal static class IconLoader
 
     public static ImageSource? Load(string path, int sizePx)
     {
+        string ext = System.IO.Path.GetExtension(path);
+        bool shareable = ext.Length > 1
+            && !PerFileIcon.Contains(ext) && !ThumbnailExts.Contains(ext)
+            && !path.StartsWith("::") && !System.IO.Directory.Exists(path);
+        if (!shareable) return LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK);
+
+        string key = $"{ext}|{sizePx}";
+        lock (_shared)
+            if (_shared.TryGetValue(key, out var cached)) return cached;
+        var src = LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY);
+        if (src != null)
+            lock (_shared) _shared[key] = src;
+        return src;
+    }
+
+    private static ImageSource? LoadUncached(string path, int sizePx, int flags)
+    {
         IntPtr hbm = IntPtr.Zero;
         try
         {
             var iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
             SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out object o);
             var factory = (IShellItemImageFactory)o;
-            if (factory.GetImage(new SIZE { cx = sizePx, cy = sizePx }, SIIGBF_BIGGERSIZEOK, out hbm) != 0 || hbm == IntPtr.Zero)
+            if (factory.GetImage(new SIZE { cx = sizePx, cy = sizePx }, flags, out hbm) != 0 || hbm == IntPtr.Zero)
                 return null;
             return HBitmapToSource(hbm);
         }
