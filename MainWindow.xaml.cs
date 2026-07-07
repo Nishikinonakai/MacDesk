@@ -1135,14 +1135,14 @@ public partial class MainWindow : Window
             int idx = ((cur + (e.Delta < 0 ? 1 : -1)) % pv.Members.Count + pv.Members.Count) % pv.Members.Count;
             pv.ScrubIndex = idx;
             pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
-            PokeFrames(150); // 换图是纯渲染变化，LayoutUpdated 兜不住
+            PokeElement(root, 150); // 换图是纯渲染变化，LayoutUpdated 兜不住
         };
         root.MouseLeave += (_, _) =>
         {
             if (pv.ScrubIndex == -1) return;
             pv.ScrubIndex = -1;
             pv.IconFront.Source = pv.RestingFrontIcon;
-            PokeFrames(150);
+            PokeElement(root, 150);
         };
         return pv;
     }
@@ -1345,7 +1345,7 @@ public partial class MainWindow : Window
         if (on) _selection.Add(iv); else _selection.Remove(iv);
         iv.IconPlate.Background = on ? SelIconBg : Brushes.Transparent;
         iv.LabelPlate.Background = on ? SelLabelBg : Brushes.Transparent;
-        PokeFrames(120); // 笔刷变化是纯渲染，透传态要催帧
+        PokeElement(iv.Root, 120); // 笔刷变化是纯渲染，透传态要催帧
     }
 
     private void ClearSelection()
@@ -1482,8 +1482,7 @@ public partial class MainWindow : Window
         double homeX = group.Min(g => double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root));
         double homeY = group.Min(g => double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root));
 
-        foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); } // 原位留影
-        PokeFrames(200);
+        foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); PokeElement(g.Root, 200); } // 原位留影
         DragDropEffects? result = null;
         try { result = ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
@@ -1500,9 +1499,8 @@ public partial class MainWindow : Window
         }
         else
         {
-            foreach (var g in group) g.Root.Opacity = 1;
+            foreach (var g in group) { g.Root.Opacity = 1; PokeElement(g.Root, 150); }
             _dragGhosts.Clear();
-            PokeFrames(150);
         }
         // 后续：拖回自己/兄弟窗口 → OnDesktopDrop 重定位；Move 去外部 → FileSystemWatcher 移除图标
     }
@@ -1539,9 +1537,8 @@ public partial class MainWindow : Window
         void Land()
         {
             IconCanvas.Children.Remove(ghost);
-            foreach (var g in group) g.Root.Opacity = 1;
+            foreach (var g in group) { g.Root.Opacity = 1; PokeElement(g.Root, 150); }
             _dragGhosts.Clear();
-            PokeFrames(150);
         }
         var dur = TimeSpan.FromMilliseconds(220);
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
@@ -1550,7 +1547,7 @@ public partial class MainWindow : Window
         ax.Completed += (_, _) => Land();
         ghost.BeginAnimation(Canvas.LeftProperty, ax);
         ghost.BeginAnimation(Canvas.TopProperty, ay);
-        PokeFrames(400); // 回弹全程催帧
+        PokeElement(ghost, 400); // 回弹全程催帧（脏区跟着幽灵飞）
     }
 
     /// <summary>拖拽图像：组图标按当前相对位置合成；包围盒过大退化为锚点图标+计数角标。物理像素。</summary>
@@ -1750,7 +1747,7 @@ public partial class MainWindow : Window
         Canvas.SetTop(_bandRect, rect.Y);
         _bandRect.Width = rect.Width;
         _bandRect.Height = rect.Height;
-        PokeFrames(150); // 拖动期间持续续命（LayoutUpdated 只唤醒不续命）
+        PokeElement(_bandRect, 150); // 拖动期间持续续命（LayoutUpdated 只唤醒不续命）
 
         foreach (var iv in VisibleIcons)
         {
@@ -1884,14 +1881,12 @@ public partial class MainWindow : Window
 
         RestoreCutIcons();
         if (cut)
-            foreach (var s in items) { _cutIcons.Add(s); s.Root.Opacity = 0.5; } // 剪切态半透明
-            PokeFrames(150);
+            foreach (var s in items) { _cutIcons.Add(s); s.Root.Opacity = 0.5; PokeElement(s.Root, 150); } // 剪切态半透明
     }
 
     private void RestoreCutIcons()
     {
-        foreach (var iv in _cutIcons) iv.Root.Opacity = 1;
-        PokeFrames(150);
+        foreach (var iv in _cutIcons) { iv.Root.Opacity = 1; PokeElement(iv.Root, 150); }
         _cutIcons.Clear();
     }
 
@@ -2318,7 +2313,7 @@ public partial class MainWindow : Window
         bool lit = on || _selection.Contains(iv); // 取消高亮时恢复真实选中态视觉
         iv.IconPlate.Background = lit ? SelIconBg : Brushes.Transparent;
         iv.LabelPlate.Background = lit ? SelLabelBg : Brushes.Transparent;
-        PokeFrames(150);
+        PokeElement(iv.Root, 150);
     }
 
     /// <summary>强调色变化后刷新当前选中态视觉（新选中自然用新色，这里补已选中的）。</summary>
@@ -2840,6 +2835,9 @@ public partial class MainWindow : Window
         _presenter?.Dispose();
         _presenter = null;
         _frameBitmap = null;
+        _patchBitmap = null;
+        _dirtyTracked.Clear();
+        _fullDirtyUntil = DateTime.MinValue;
 
         if (_weWindow != IntPtr.Zero)
         {
@@ -2854,14 +2852,48 @@ public partial class MainWindow : Window
     }
 
     /// <summary>渲染一帧到呈现层。VisualBrush + Stretch.Fill 把 RootGrid（含 LayoutTransform
-    /// DPI 补偿）直接映射到物理像素矩形，省掉所有 DIU/DPI 换算。</summary>
-    private void RenderFrame()
+    /// DPI 补偿）直接映射到物理像素矩形，省掉所有 DIU/DPI 换算。
+    /// dirtyPhys 非空 = 脏区裁剪路径（P0-B）：只光栅化脏矩形（成本 ∝ 面积），patch 写进
+    /// DIB 子矩形，未变区域保留上一帧。全帧路径（null）用于进入动态/兜底帧/泵收尾定格。</summary>
+    private void RenderFrame(Rect? dirtyPhys = null)
     {
         if (_presenter == null || !_attached) return;
         int pw = Monitor.Physical.Width, ph = Monitor.Physical.Height;
         if (pw < 1 || ph < 1 || RootGrid.ActualWidth < 1) return;
-        var t0 = DateTime.UtcNow;
 
+        // 脏区太大时小 RTB 无优势（还多一次拷贝），退回全帧；_frameBitmap 为空或尺寸不符
+        // 说明本尺寸还没推过全帧（patch 会叠在清零的新 DIB 上），必须全帧起步
+        if (dirtyPhys is { } d0 && _frameBitmap?.PixelWidth == pw && _frameBitmap.PixelHeight == ph
+            && d0.Width * d0.Height < pw * (double)ph * 0.5)
+        {
+            int x = Math.Max(0, (int)Math.Floor(d0.X)), y = Math.Max(0, (int)Math.Floor(d0.Y));
+            int w = Math.Min(pw, (int)Math.Ceiling(d0.Right)) - x, h = Math.Min(ph, (int)Math.Ceiling(d0.Bottom)) - y;
+            if (w < 1 || h < 1) return; // 脏区在屏外/空：本帧无事可做
+            // 尺寸圆整到 32 的倍数提高 patch RTB 复用率（动画期间包围盒每帧微变）
+            w = Math.Min(pw - x, (w + 31) & ~31);
+            h = Math.Min(ph - y, (h + 31) & ~31);
+            var t0p = DateTime.UtcNow;
+            if (_patchBitmap == null || _patchBitmap.PixelWidth != w || _patchBitmap.PixelHeight != h)
+                _patchBitmap = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+            else
+                _patchBitmap.Clear();
+            var dvp = new DrawingVisual();
+            using (var dcp = dvp.RenderOpen())
+            {
+                dcp.PushTransform(new TranslateTransform(-x, -y));
+                dcp.DrawRectangle(new VisualBrush(RootGrid), null, new Rect(0, 0, pw, ph));
+                dcp.Pop();
+            }
+            _patchBitmap.Render(dvp);
+            _presenter.PushDirty(_patchBitmap, x, y);
+            double costP = (DateTime.UtcNow - t0p).TotalMilliseconds;
+            _frameCostMs = _frameCostMs * 0.8 + costP * 0.2;
+            _burstFrames++;
+            _burstCostMs += costP;
+            return;
+        }
+
+        var t0 = DateTime.UtcNow;
         if (_frameBitmap == null || _frameBitmap.PixelWidth != pw || _frameBitmap.PixelHeight != ph)
             _frameBitmap = new RenderTargetBitmap(pw, ph, 96, 96, PixelFormats.Pbgra32);
         else
@@ -2879,12 +2911,70 @@ public partial class MainWindow : Window
         _burstCostMs += cost;
     }
 
-    /// <summary>催帧：把帧泵维持到 holdMs 后（动画/交互期间持续推帧，静止自动停）。</summary>
-    internal void PokeFrames(int holdMs = 350)
+    // ── 脏区跟踪（P0-B）：谁在动/变，只重画谁的包围盒 ──────────────────
+    // PokeElement 登记"这个元素接下来 ms 毫秒是脏源"；每个泵帧对所有在册元素取
+    // 当前包围盒 ∪ 上一帧包围盒（飞行轨迹两端都要重画），映射到物理像素后交给
+    // RenderFrame 裁剪光栅化。没有元素上下文的 PokeFrames（LayoutUpdated 唤醒、
+    // 全局刷新）走全帧窗口 _fullDirtyUntil。
+
+    private RenderTargetBitmap? _patchBitmap;
+    private sealed class DirtyTrack { public DateTime Until; public Rect Last = Rect.Empty; }
+    private readonly Dictionary<FrameworkElement, DirtyTrack> _dirtyTracked = new();
+    private DateTime _fullDirtyUntil = DateTime.MinValue;
+
+    private void PokeElement(FrameworkElement el, int ms = 350)
+    {
+        if (_presenter == null) return;
+        var until = DateTime.UtcNow.AddMilliseconds(ms);
+        if (_dirtyTracked.TryGetValue(el, out var t)) { if (until > t.Until) t.Until = until; }
+        else _dirtyTracked[el] = new DirtyTrack { Until = until };
+        PokeFrames(ms, fullDirty: false);
+    }
+
+    /// <summary>本泵帧的脏区（物理像素），null = 全帧。元素包围盒按
+    /// physX = elX(RootGrid DIU) × pw/ActualWidth 映射——RootGrid 的 LayoutTransform 在
+    /// TransformToAncestor 里不出现、在 VisualBrush 内容尺寸里又被 Stretch.Fill 除掉，
+    /// 两处相消，公式对任何 DPI 补偿系数都成立。</summary>
+    private Rect? ComputeDirtyPhysical(DateTime now)
+    {
+        if (now < _fullDirtyUntil || _dirtyTracked.Count == 0) return null;
+        int pw = Monitor.Physical.Width, ph = Monitor.Physical.Height;
+        double sx = pw / RootGrid.ActualWidth, sy = ph / RootGrid.ActualHeight;
+        Rect acc = Rect.Empty;
+        List<FrameworkElement>? expired = null;
+        foreach (var (el, t) in _dirtyTracked)
+        {
+            Rect cur = Rect.Empty;
+            if (el.IsVisible && el.IsDescendantOf(RootGrid))
+            {
+                try
+                {
+                    var b = el.TransformToAncestor(RootGrid).TransformBounds(new Rect(el.RenderSize));
+                    cur = new Rect(b.X * sx, b.Y * sy, b.Width * sx, b.Height * sy);
+                }
+                catch { return null; } // 变换链断了（元素刚被摘）：全帧兜底
+            }
+            if (cur != Rect.Empty) acc.Union(cur);
+            if (t.Last != Rect.Empty) acc.Union(t.Last); // 上一帧位置也要重画（腾出的地方）
+            t.Last = cur;
+            if (now > t.Until) (expired ??= new List<FrameworkElement>()).Add(el);
+        }
+        if (expired != null) foreach (var el in expired) _dirtyTracked.Remove(el);
+        if (acc == Rect.Empty) return Rect.Empty; // 在册元素全隐身且无遗留：无事可做
+        acc.Inflate(12, 12); // 阴影模糊 + AA 余量（阴影保留模式 4K@225% 最大 ~10px）
+        acc.Intersect(new Rect(0, 0, pw, ph));
+        return acc;
+    }
+
+    /// <summary>催帧：把帧泵维持到 holdMs 后（动画/交互期间持续推帧，静止自动停）。
+    /// fullDirty=true（默认，无元素上下文的调用点）= 窗口期内每帧全量渲染；
+    /// 有元素上下文的走 PokeElement（脏区裁剪，P0-B）。</summary>
+    internal void PokeFrames(int holdMs = 350, bool fullDirty = true)
     {
         if (_presenter == null) return;
         var until = DateTime.UtcNow.AddMilliseconds(holdMs);
         if (until > _pumpUntil) _pumpUntil = until;
+        if (fullDirty && until > _fullDirtyUntil) _fullDirtyUntil = until;
         if (_pumpOn) return;
         _pumpOn = true;
         CompositionTarget.Rendering += OnPumpFrame;
@@ -2915,17 +3005,20 @@ public partial class MainWindow : Window
         }
         // 自适应节流：渲染成本的 2 倍为间隔下限（帧贵自动降帧率，渲染占 UI 线程 ≤50%），
         // 最快 ~60fps。**不设上限**——上限会在帧成本高时变成"强制高频渲染"烤死 UI 线程
-        //（4K avg 1031ms/帧 × 66ms 上限 = 交互全糊的元凶，真机实锤）
+        //（4K avg 1031ms/帧 × 66ms 上限 = 交互全糊的元凶，真机实锤）。脏区帧便宜，
+        // _frameCostMs 的 EMA 会自动落到 patch 成本，动画期逼近 60fps（P0-B 的目标）。
         double minGap = Math.Max(15, _frameCostMs * 2);
         if ((now - _lastFramePush).TotalMilliseconds < minGap) return;
         _lastFramePush = now;
-        RenderFrame();
+        var dirty = ComputeDirtyPhysical(now);
+        if (dirty == Rect.Empty) return; // 在册元素全隐身且无遗留：本帧跳过
+        RenderFrame(dirty);
     }
 
     /// <summary>渲染型变化（不触发布局，LayoutUpdated 兜不住）的静态调用点用：
-    /// 笔刷/透明度动画/换图所在窗口催帧。</summary>
+    /// 笔刷/透明度动画/换图所在窗口催帧 + 登记脏区跟踪（P0-B）。</summary>
     private static void PokeWindowOf(FrameworkElement el, int ms = 350) =>
-        (Window.GetWindow(el) as MainWindow)?.PokeFrames(ms);
+        (Window.GetWindow(el) as MainWindow)?.PokeElement(el, ms);
 
     /// <summary>重命名期间光标闪烁是纯渲染变化，低频定时催帧让呈现层跟上。</summary>
     private void StartRenameCaretPump()

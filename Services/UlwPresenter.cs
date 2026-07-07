@@ -76,6 +76,29 @@ internal sealed class UlwPresenter : IDisposable
             Log.Write("[presenter] ULW failed err=" + Marshal.GetLastWin32Error());
     }
 
+    /// <summary>脏区推帧（P0-B）：只把 patch 写进 DIB 的 (dx,dy) 子矩形（未变区域保留上一帧
+    /// 内容），ULW 照推全表面——kernel 拷贝便宜，贵的是调用方的光栅化，那边已按脏区裁剪。
+    /// patch 同样必须是 Pbgra32。越界直接拒收（调用方负责钳制）。</summary>
+    public void PushDirty(BitmapSource patch, int dx, int dy)
+    {
+        if (Hwnd == IntPtr.Zero || _bits == IntPtr.Zero) return;
+        int pw = patch.PixelWidth, ph = patch.PixelHeight;
+        if (dx < 0 || dy < 0 || pw < 1 || ph < 1 || dx + pw > _w || dy + ph > _h)
+        {
+            Log.Write($"[presenter] dirty patch {pw}x{ph}@({dx},{dy}) out of {_w}x{_h}; skipped");
+            return;
+        }
+        int stride = _w * 4;
+        IntPtr dst = _bits + dy * stride + dx * 4;
+        patch.CopyPixels(System.Windows.Int32Rect.Empty, dst, stride * (ph - 1) + pw * 4, stride);
+
+        var size = new SIZE { cx = _w, cy = _h };
+        var srcPt = new POINT { X = 0, Y = 0 };
+        var blend = new BLENDFUNCTION { BlendOp = 0 /*AC_SRC_OVER*/, SourceConstantAlpha = 255, AlphaFormat = 1 /*AC_SRC_ALPHA*/ };
+        if (!UpdateLayeredWindow(Hwnd, IntPtr.Zero, IntPtr.Zero, ref size, _memDc, ref srcPt, 0, ref blend, ULW_ALPHA))
+            Log.Write("[presenter] ULW failed err=" + Marshal.GetLastWin32Error());
+    }
+
     public void Dispose()
     {
         FreeSurface();

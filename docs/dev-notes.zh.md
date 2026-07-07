@@ -871,3 +871,28 @@ Fable 5 接手后对前两批的批判性复查产出的两处修复，一批交
   4K@225% 的 RenderAtScale 路径未实测（等分辨率交接实测窗口一并看）。
 - **副产品修复**：拖拽原位留影（0.35）、剪切半透明（0.5）等一切长期 Opacity<1 的
   图标此前在 WE 后台跑时也会打洞漏亮——Root 缓存一并治好。
+
+## 2026-07-07 深夜 II：动态模式脏区裁剪渲染（P0-B，1080p 50ms→8ms/帧，真机验证）
+
+机主反馈禁阴影开关在 1080p 体感不大——摘阴影后 ~50ms/帧≈20fps 的瓶颈是全树全帧
+软件光栅化本身。正解 = 脏区：只重画"在变的东西"的包围盒。
+
+- **跟踪**：`PokeElement(el, ms)` 登记脏源（PokeWindowOf 全部改道；框选 _bandRect、
+  刮擦 pile、拖拽留影/回弹幽灵、剪切半透明、选中/放置高亮等所有有元素上下文的调用点
+  逐一升级）。每个泵帧对在册元素取 **当前包围盒 ∪ 上一帧包围盒**（飞行轨迹两端都要
+  重画，腾出的地方才不留残影），过期即除名。无元素上下文的 PokeFrames（LayoutUpdated
+  唤醒、强调色全局刷新、进入动态）走 `_fullDirtyUntil` 全帧窗口。
+- **渲染**：`RenderFrame(dirtyPhys)` 起小尺寸 patch RTB（尺寸圆整 32 提复用率），
+  PushTransform(-x,-y) + VisualBrush(RootGrid) 全矩形一画——WPF 只光栅化与 RTB 边界
+  相交的部分，成本 ∝ 脏区面积。脏区 ≥ 半屏或 _frameBitmap 尺寸不符（分辨率刚变）
+  退回全帧。坐标映射 physX = elX × pw/ActualWidth：RootGrid 的 LayoutTransform 在
+  TransformToAncestor 与 VisualBrush 内容尺寸两处相消，任何 DPI 补偿系数下都成立。
+- **上屏**：`UlwPresenter.PushDirty(patch, dx, dy)`——CopyPixels 带全表面 stride 直写
+  DIB 子矩形（未变区域保留上一帧），ULW 照推全表面（kernel 拷贝便宜）。
+- **节流协同**：_frameCostMs EMA 自动落到 patch 成本（~8ms）→ minGap 降到 15ms 地板
+  → 动画期 ~60fps。泵收尾帧照旧全帧定格，静止路径（30s 兜底、心跳）不变。
+- **真机数据**（1080p 动态 + Raindrops）：堆展开/收起 burst 由 5-7 帧 avg ~50ms →
+  **14-27 帧 avg 8.0-13.1ms**；连拍逐帧检查展开/收起/其他堆滑动/框选全程零残影零错位，
+  收起后腾出列干净；框选大框（~400×400）avg 36.4ms（面积大 patch 大，仍优于全帧）。
+- **待观察**：4K@225% 未实测（脏区面积同比例小，预期把"卡成灯片"拉到可用）；大框选
+  的 patch RTB 逐帧重分配可再优化（bucket 更粗/池化），暂不动。
