@@ -1036,49 +1036,32 @@ public partial class MainWindow : Window
         fanGroup.Children.Add(iconMid);
         fanGroup.Children.Add(iconFront);
 
-        // 展开态语义占位（macOS：展开后原堆位变成叠层卡片 + 向下箭头 = "点此收起"按钮）
-        var card1 = new Border
-        {
-            Width = 54, Height = 54,
-            CornerRadius = new CornerRadius(9),
-            Background = new SolidColorBrush(Color.FromArgb(0x38, 0xFF, 0xFF, 0xFF)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(0x50, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
-        };
-        var card2 = new Border
-        {
-            Width = 57, Height = 57,
-            CornerRadius = new CornerRadius(9),
-            Background = new SolidColorBrush(Color.FromArgb(0x58, 0xFF, 0xFF, 0xFF)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
-            BorderThickness = new Thickness(1),
-            HorizontalAlignment = HorizontalAlignment.Right,
-            VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(0, 6, 5, 0),
-        };
+        // 展开态语义占位（机主定案的简化样式）：一个白色半透明圆角矩形 + 居中向下 V 箭头
+        // = "点此收起"按钮。箭头带轻阴影，半透明底上不糊。
         var chevron = new System.Windows.Shapes.Path
         {
-            Data = Geometry.Parse("M 0,0 L 9,9 L 18,0"),
-            Stroke = new SolidColorBrush(Color.FromArgb(0xE8, 0xFF, 0xFF, 0xFF)),
-            StrokeThickness = 3,
+            Data = Geometry.Parse("M 0,0 L 11,11 L 22,0"),
+            Stroke = new SolidColorBrush(Color.FromArgb(0xF0, 0xFF, 0xFF, 0xFF)),
+            StrokeThickness = 3.5,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
             StrokeLineJoin = PenLineJoin.Round,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 5, 0, 0), // V 形视觉重心偏上，微降回正
+            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.45 },
         };
         var cardGroup = new Grid { Opacity = 0, IsHitTestVisible = false }; // 初始收起态：只见扇形
-        cardGroup.Children.Add(card1);
-        cardGroup.Children.Add(card2);
         cardGroup.Children.Add(new Border
         {
-            Width = 34, Height = 34,
-            CornerRadius = new CornerRadius(9),
-            Background = new SolidColorBrush(Color.FromArgb(0x40, 0x00, 0x00, 0x00)),
+            Width = 58, Height = 58,
+            CornerRadius = new CornerRadius(12),
+            Background = new SolidColorBrush(Color.FromArgb(0x4C, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
             Child = chevron,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 4, 0, 0),
         });
 
         var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
