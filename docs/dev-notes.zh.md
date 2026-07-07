@@ -982,3 +982,26 @@ release zip 只含 CI 构建产物，**不可能被发版带走**。
 - **真机数据（1080p 动态模式）**：+500 同类文件内存 +32MB（去重前 +244MB，**~10×**）；
   500 文件冷启动 **2.6s**（去重前 1000 文件 8.8s，同数量级外推 ~4.4s+；现在瓶颈只剩
   视觉树构建，同类型取图只跑一次）。
+
+## 2026-07-08 凌晨：v1.0.2 发版——安装器全链路 + 一键更新真机实测（机主"摩擦大"反馈闭环）
+
+- **发版三连**：v1.0.1（安装器+性能）因 CI 两坑重打两次——①ISCC OutputDir 相对 .iss
+  目录，release glob 在仓库根匹配不到（softprops 只警告不报错，zip 挂了 exe 没挂）→
+  CI 传 /O"$PWD"；②GitHub runner 的 Inno 6.7.1 不带 ChineseSimplified.isl（源码库已
+  转正但发行包没带）→ vendored 进 installer/。v1.0.2 = 一键更新。
+- **安装器交互全流程真机点击验证**（机主中途把 TV 切到 4K@300%，顺带在 4K 下测的）：
+  语言选择（默认 English 跟系统 UI 语言、下拉有简体中文）→ 中文向导（目标位置
+  %LOCALAPPDATA%\Programs\MacDesk、175.6MB）→ 安装 → 完成页勾选"运行 MacDesk"→
+  安装副本启动 ✓。全新安装前要先退运行中的旧副本（安装器只认 {app} 里的）。
+- **一键更新端到端**（版本欺骗法：把 -p:Version=1.0.1 的构建塞进安装目录 → 它真实
+  地发现 v1.0.2 release）：检查更新 → "是 = 自动下载并安装" → 51MB 下载（进度%）→
+  VERYSILENT 安装（PrepareToInstall --quit 还原原生图标）→ /RELAUNCH=1 自动拉起
+  1.0.2 ✓✓。用户全程一次点击。
+- **4K@300% 顺带验证**（backlog 清项）：P0-A Root BitmapCache 的 RenderAtScale 在
+  300% 下标签逐像素清晰；堆展开/收起动画、占位卡片、DPI 补偿（worksize=1365×720
+  DIU）全部正确。P0-B 动态模式脏区在 4K 未测（机主看片关了 WE，等下次开）。
+- **部署位置变更**：机主机器自此运行安装器副本（%LOCALAPPDATA%\Programs\MacDesk），
+  自启 Run 键已改指过去；C:\work\macdesk 留档不再运行。dev 增量部署改 scp 到安装目录。
+- **4K 注入测试坑**：代理 PS 进程无 DPI 感知，GetSystemMetrics/SetCursorPos 全被
+  虚拟化（4096→1365）——注入前必须 SetThreadDpiAwarenessContext(-4)；/screen 端点
+  不受影响（返回物理分辨率）。
