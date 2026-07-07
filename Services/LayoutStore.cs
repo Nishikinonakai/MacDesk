@@ -37,6 +37,9 @@ internal sealed class LayoutStore
     private Dictionary<string, CanonPos> Section(string monKey) =>
         _monitors.TryGetValue(monKey, out var m) ? m : (_monitors[monKey] = new());
 
+    /// <summary>任何显示器区都没有条目（首启/新装，OOBE 导入的门槛）。</summary>
+    public bool IsEmpty => _monitors.All(m => m.Value.Count == 0);
+
     /// <summary>图标当前归属的显示器 key（不在任何区 → null）。</summary>
     public string? FindOwner(string name) =>
         _monitors.FirstOrDefault(kv => kv.Value.ContainsKey(name)).Key;

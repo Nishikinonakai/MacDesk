@@ -141,7 +141,9 @@ internal static class ShellContextMenu
         {
             var sb = new System.Text.StringBuilder(512);
             GetMenuStringW(hMenu, (uint)i, sb, sb.Capacity, MF_BYPOSITION);
-            var txt = sb.ToString();
+            // 剥加速键符号再比：黑名单存的是无 & 的文本（设置 GUI 目录同款），
+            // "Properties" 必须能命中菜单原文 "P&roperties"
+            var txt = sb.ToString().Replace("&", "");
             if (txt.Length > 0 && bl.Any(b => !string.IsNullOrWhiteSpace(b) && txt.Contains(b, StringComparison.OrdinalIgnoreCase)))
                 RemoveMenu(hMenu, (uint)i, MF_BYPOSITION);
         }

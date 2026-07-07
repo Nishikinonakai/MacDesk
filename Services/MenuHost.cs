@@ -202,6 +202,7 @@ internal static class MenuHost
                 if (shellSide)
                 {
                     items = reply.Items!;
+                    NativeMenuPresenter.Catalog(items); // 只收 shell 项（自定义项追加之前）
                     if (verb == "bg") items.AddRange(NativeMenuPresenter.CustomBackgroundItems());
                 }
                 else

@@ -1931,6 +1931,7 @@ public partial class MainWindow : Window
     // 限制：动态壁纸（Wallpaper Engine 等）只镜像不了，静态图/纯色/幻灯片当前帧都可以。
 
     private Image? _wallpaper;
+    private string _wallpaperSig = "";
 
     internal void ApplyDesktopBackground()
     {
@@ -1938,11 +1939,17 @@ public partial class MainWindow : Window
         {
             var info = Interop.DesktopWallpaper.ForMonitor(Monitor.Physical);
 
-            // 底色兼命中测试面（Fit/Center 的留边也用它）
-            RootGrid.Background = new SolidColorBrush(info?.BackColor ?? RegistryBackColor());
-
             string? path = info?.ImagePath
                 ?? Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null) as string;
+
+            // 签名比对：轮询兜底（设置应用走 IDesktopWallpaper 不广播 WM_SETTINGCHANGE，
+            // 机主实测事件路径漏跟）每 8s 调进来，无变化即零开销早退，变了才重渲染
+            string sig = $"{path}|{info?.Position}|{info?.BackColor}";
+            if (sig == _wallpaperSig) return;
+            _wallpaperSig = sig;
+
+            // 底色兼命中测试面（Fit/Center 的留边也用它）
+            RootGrid.Background = new SolidColorBrush(info?.BackColor ?? RegistryBackColor());
             if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
                 RemoveWallpaperImage();

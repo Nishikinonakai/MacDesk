@@ -11,6 +11,7 @@ using ListBox = System.Windows.Controls.ListBox;
 using Button = System.Windows.Controls.Button;
 using GroupBox = System.Windows.Controls.GroupBox;
 using DockPanel = System.Windows.Controls.DockPanel;
+using ComboBox = System.Windows.Controls.ComboBox;
 
 namespace MacDesk;
 
@@ -79,6 +80,23 @@ internal sealed class SettingsWindow : Window
         RefreshBlacklist();
         bl.Children.Add(_blacklist);
 
+        // 预设选择：从最近弹过的菜单里直接挑（右键过一次桌面/图标目录就有货）
+        var pickRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
+        var pick = new ComboBox { Margin = new Thickness(0, 0, 6, 0) };
+        var pickBtn = new Button { Content = "屏蔽该项", Width = 88, Padding = new Thickness(0, 2, 0, 2) };
+        DockPanel.SetDock(pickBtn, Dock.Right);
+        pickRow.Children.Add(pickBtn);
+        pickRow.Children.Add(pick);
+        bl.Children.Add(pickRow);
+
+        void FillPick()
+        {
+            var have = new HashSet<string>(Config.MenuBlacklist, StringComparer.OrdinalIgnoreCase);
+            pick.ItemsSource = Services.NativeMenuPresenter.MenuItemCatalog.Where(t => !have.Contains(t)).ToList();
+        }
+        FillPick();
+        pick.DropDownOpened += (_, _) => FillPick(); // 每次展开取最新目录
+
         var addRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0) };
         var input = new TextBox { Margin = new Thickness(0, 0, 6, 0) };
         var addBtn = new Button { Content = "添加", Width = 64, Padding = new Thickness(0, 2, 0, 2) };
@@ -112,6 +130,17 @@ internal sealed class SettingsWindow : Window
         }
         addBtn.Click += (_, _) => Add();
         input.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Enter) Add(); };
+        pickBtn.Click += (_, _) =>
+        {
+            if (pick.SelectedItem is not string s || s.Length == 0) return;
+            if (!Config.MenuBlacklist.Contains(s, StringComparer.OrdinalIgnoreCase))
+            {
+                Config.MenuBlacklist.Add(s);
+                Config.Save();
+                RefreshBlacklist();
+            }
+            FillPick();
+        };
         delBtn.Click += (_, _) =>
         {
             if (_blacklist.SelectedItem is not string sel) return;

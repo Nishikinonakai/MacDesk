@@ -50,6 +50,18 @@ internal static class Desktop
         Layout = new LayoutStore(PrimaryKey);
         Config = Settings.Load();
         Provider = new DesktopItemProvider();
+
+        // OOBE 首启导入：布局档为空（新装）时把原生桌面的现有摆放转成规范锚距，
+        // 装上 MacDesk 图标保持原位而不是被重排（机主点头过的开源发布项）
+        if (Layout.IsEmpty)
+        {
+            try
+            {
+                if (Interop.DesktopLayer.EnsureDiscovered())
+                    Interop.NativeDesktopLayout.ImportIfFirstRun(Monitors, Layout, Provider.Enumerate());
+            }
+            catch (Exception ex) { Log.Write("OOBE import failed: " + ex.Message); }
+        }
         _fsDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _fsDebounce.Tick += (_, _) => { _fsDebounce.Stop(); RefreshAll(); };
         Provider.Changed += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
@@ -58,7 +70,10 @@ internal static class Desktop
             _fsDebounce.Start();
         });
 
-        // 壁纸变化跟随（SystemEvents 包装 WM_SETTINGCHANGE；换壁纸/换适配模式/幻灯片切换都会来）
+        // 壁纸变化跟随，双通道：
+        // ①事件快路径（SystemEvents 包装 WM_SETTINGCHANGE）——SPI 广播型换壁纸秒级跟；
+        // ②8s 轮询兜底——设置应用走 IDesktopWallpaper::SetWallpaper **不广播**（机主实测
+        //   事件路径漏跟），轮询里签名比对无变化零开销，变了才重渲染。
         var wpDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         wpDebounce.Tick += (_, _) =>
         {
@@ -75,6 +90,9 @@ internal static class Desktop
                     wpDebounce.Start();
                 });
         };
+        var wpPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(8) };
+        wpPoll.Tick += (_, _) => { foreach (var w in Windows) w.ApplyDesktopBackground(); };
+        wpPoll.Start();
     }
 
     /// <summary>图标的有效规范位置（无视归属显示器是否在场）。</summary>

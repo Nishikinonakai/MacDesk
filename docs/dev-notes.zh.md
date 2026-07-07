@@ -412,3 +412,24 @@ SetPreferredAppMode 一行即生效（机主现用浅色主题，改了也不可
   **Tab 是焦点导航键，必须在 PreviewKeyDown 拦**（KeyDown 已被 KeyboardNavigation 吃掉）。
   真机：Tab 从新建文件夹跳到相邻图标、编辑框全选就位、Esc 安全取消。
 - 顺带观测：机主已在用壁纸镜像功能（桌面换上了插画壁纸）——特性上线即被采用。
+
+## 2026-07-07 午 IV：壁纸轮询兜底 + OOBE 原生布局导入 + 黑名单预设选择（真机验证）
+
+- **换壁纸不跟（机主实测反馈）根因**：设置应用换壁纸走 IDesktopWallpaper::SetWallpaper，
+  **不广播 WM_SETTINGCHANGE**——我们的 SystemEvents 事件路径收不到（此前 SPI 广播型测试
+  能过、掩盖了这条路）。修 = 双通道：事件快路径保留 + **8s 轮询兜底**（ApplyDesktopBackground
+  进门先做签名比对 `path|pos|color`，无变化零开销早退）。真机：COM 无广播换壁纸 8s 内
+  双屏跟上、还原同样跟回。
+- **OOBE 首启导入原生布局**（开源发布关键项，机主早前点头）：`Interop/NativeDesktopLayout.cs`
+  跨进程读原生 ListView（VirtualAllocEx + LVM_GETITEMPOSITION/GETITEMTEXTW，方案 A 同款；
+  LVITEM 用 x64 布局、MapWindowPoints 客户区→物理屏幕、PMv2 下无虚拟化），按 DisplayName
+  匹配桌面项（回收站虚拟项直接命中），中心点 = 图标左上 + SM_CX/CYICONSPACING 半格，
+  换算所属显示器的规范锚距（与 PosToCanon 同阈值 0.6）。门槛 = LayoutStore.IsEmpty（只有
+  全新安装触发）。真机：**28/28 全命中导入**，布局档删除→重启→原生陈年布局完整重现→
+  还原布局档→重启→机主布局逐像素回归（diff=0）。隐藏中的 ListView 照常应答 LVM 消息。
+- **黑名单预设选择**（设置 GUI 补完）：主进程每次弹菜单把 shell 项文本收进会话级目录
+  （**在追加自定义项之前收**，自家功能/子菜单头不入目录；文本剥 & 加速键符号），设置窗口
+  下拉框直接选中屏蔽，不用手打子串。**顺带修了真隐患：黑名单是子串匹配，菜单原文含 &
+  （如 P&roperties）会让不含 & 的黑名单词失配——StripBlacklisted 比对前先剥 &**。
+- 部署插曲：scp 忘了 publish/ 前缀，旧二进制被重启当新版测（procs 正常但行为是旧的）——
+  scp 后必须确认 REDEPLOYED 无报错再下结论。

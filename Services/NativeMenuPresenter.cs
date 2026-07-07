@@ -39,6 +39,38 @@ internal static class NativeMenuPresenter
     /// <summary>菜单开着：MainWindow 钩子在此期间吞 WM_CANCELMODE。</summary>
     public static bool MenuOpen => Current != null;
 
+    // ── 菜单项文本目录（设置 GUI 的黑名单预设选择用） ─────────
+    // 每次弹菜单顺手收集见过的项目文本（含子菜单），设置窗口里从目录直接选着屏蔽，
+    // 不用手打子串。会话级缓存即可（右键几次就齐了）。
+
+    private static readonly object _catalogLock = new();
+    private static readonly HashSet<string> _menuItemCatalog = new(StringComparer.OrdinalIgnoreCase);
+
+    public static string[] MenuItemCatalog
+    {
+        get { lock (_catalogLock) return _menuItemCatalog.OrderBy(s => s, StringComparer.CurrentCultureIgnoreCase).ToArray(); }
+    }
+
+    /// <summary>只喂 shell 部分（追加自定义项之前调用——自家功能项/子菜单头不进目录）。
+    /// 文本剥掉加速键 &，与 StripBlacklisted 的比对口径一致。</summary>
+    public static void Catalog(List<MenuSnapshot.Item> items)
+    {
+        lock (_catalogLock)
+        {
+            if (_menuItemCatalog.Count > 400) return; // 防失控，够用就行
+            CatalogCore(items);
+        }
+    }
+
+    private static void CatalogCore(List<MenuSnapshot.Item> items)
+    {
+        foreach (var it in items)
+        {
+            if (!it.Sep && it.Text.Length > 0) _menuItemCatalog.Add(it.Text.Replace("&", ""));
+            if (it.Children != null) CatalogCore(it.Children);
+        }
+    }
+
     /// <summary>UI 线程上重建并弹出菜单，返回选中命令 id（0 = 取消）。</summary>
     public static uint Track(IntPtr ownerHwnd, List<MenuSnapshot.Item> items, int x, int y)
     {
