@@ -39,8 +39,8 @@ VersionInfoVersion={#MyAppVersion}
 CloseApplications=no
 
 [Languages]
-; ChineseSimplified 自 Inno 6.4 转正为官方语言（CI 的 6.7.1 自带）；缺文件=编译报错可见
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+; ChineseSimplified 在源码库已转正但 CI 的 Inno 6.7.1 安装包不带 → 随仓库 vendored
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
