@@ -397,7 +397,9 @@ public partial class MainWindow : Window
                 actual = dx / 96.0;
 
             double k = actual / believed;
+            bool dpiChanged = Math.Abs(_dpiK - actual) > 0.01;
             _dpiK = actual; // BitmapCache 的 RenderAtScale 用（高 DPI 屏缓存要按物理倍率烙）
+            if (dpiChanged) ApplyCacheModeAll(); // 已建元素的缓存按新倍率重烙
             RootGrid.LayoutTransform = Math.Abs(k - 1) < 0.001 ? null : new ScaleTransform(k, k);
 
             // WPF 对重挂子窗口的 WM_SIZE 处理不可靠（布局尺寸会卡旧值）→ 显式按它自己的
@@ -563,7 +565,7 @@ public partial class MainWindow : Window
             root.ToolTip = new ToolTip { Content = en.DisplayName };
 
         var iv = new IconVisual { Entry = en, Root = root, IconPlate = iconPlate, LabelPlate = labelPlate, Label = label };
-        ApplyCacheMode(root); // 动态壁纸模式下烙阴影进缓存（帧成本大头）
+        ApplyCacheMode(root); // 镜像=Root 挂 BitmapCache（治渐隐 alpha 打洞背板）；动态=按设置摘 Effect
         root.MouseLeftButtonDown += (s, e) => OnIconMouseDown(iv, e);
         root.MouseMove += (s, e) => OnIconMouseMove(iv, e);
         root.MouseLeftButtonUp += (s, e) => OnIconMouseUp(iv, e);
@@ -2103,6 +2105,7 @@ public partial class MainWindow : Window
         };
         TextOptions.SetTextFormattingMode(_renameBox, TextFormattingMode.Display);
         InputMethod.SetIsInputMethodEnabled(_renameBox, true); // 重命名框放开 IME，允许输入中文名
+        iv.Root.CacheMode = null; // 缓存纹理里 TextBox 光标不闪、选区不刷新——编辑期摘缓存
         iv.LabelPlate.Child = _renameBox;
         _renameBox.KeyDown += (_, ke) =>
         {
@@ -2192,7 +2195,11 @@ public partial class MainWindow : Window
         if (iv != null) RestoreLabel(iv);
     }
 
-    private void RestoreLabel(IconVisual iv) => iv.LabelPlate.Child = iv.Label;
+    private void RestoreLabel(IconVisual iv)
+    {
+        iv.LabelPlate.Child = iv.Label;
+        ApplyCacheMode(iv.Root); // 重命名摘掉的缓存挂回（见 ApplyCacheMode 注释）
+    }
 
     // ── OLE 拖放（进 & 自我重定位） ───────────────────────────
 
@@ -2664,13 +2671,24 @@ public partial class MainWindow : Window
     /// 是帧成本的绝对大头（4K 真机实测 avg 1031ms/帧 = 完全不可用，机主反馈"帧率很低"）。
     /// BitmapCache 在软件 RTB 路径不被复用（每帧重烙反而更贵，A/B 实测负优化）→ 动态模式
     /// 直接摘掉子树里所有 Effect（观感：图标少一层淡阴影，动态壁纸上不明显），退出时恢复。
-    /// 镜像模式走原生 GPU 渲染，Effect 免费，全部保留。</summary>
+    /// 镜像模式走原生 GPU 渲染，Effect 免费，全部保留——但 Root 要挂 BitmapCache（见
+    /// ApplyCacheMode 注释）：GPU 路径的 Opacity&lt;1 中间层合成会把窗口表面 alpha 打洞，
+    /// 透出身后的 WE 壁纸（堆叠展开/收起渐隐的"浅蓝背板"bug 根因）。</summary>
     private readonly Dictionary<FrameworkElement, Effect> _strippedEffects = new();
 
     private void ApplyCacheMode(FrameworkElement el)
     {
         if (_presenter != null && Config.DynamicNoShadows) StripEffects(el);
         else RestoreEffects(el);
+        // WPF 硬件合成 bug（真机实锤，2026-07-07 深夜）：元素 Opacity∈(0,1) 时走"中间层"
+        // 合成 pass，会把窗口表面该矩形的 alpha 打出洞——非分层子窗口的表面 alpha 照样参与
+        // DWM 合成，洞里透出我们身后的桌面。WE 在后面跑时 = 透出亮色动态壁纸 = 机主报的
+        // "浅蓝色方形背板"（堆叠展开/收起渐隐最明显）；WE 不跑时透出同一张静态壁纸，肉眼
+        // 不可见，所以一直没被发现。修 = 给整个图标/堆 Root 挂 BitmapCache：带缓存元素的
+        // 透明度合成走"纹理四边形"路径，不产生打洞的中间层；位移动画每帧只平移纹理还更省。
+        // 动态模式摘缓存（软件 RTB 不复用 BitmapCache，每帧重烙是实测负优化，且 RTB 无此
+        // bug）；重命名期间也要摘（TextBox 光标在缓存纹理里不刷新），见 StartRename。
+        el.CacheMode = _presenter == null ? new BitmapCache { RenderAtScale = _dpiK } : null;
     }
 
     /// <summary>动态壁纸 + 机主勾了"禁用动画" = 布局动画全部瞬移（低配帧率保底）。</summary>
@@ -2831,7 +2849,7 @@ public partial class MainWindow : Window
 
         _wallpaperSig = "";
         ApplyDesktopBackground(); // 回镜像路径（含 RootGrid 底色恢复）
-        ApplyCacheModeAll();      // 清 BitmapCache，回原生 GPU 渲染
+        ApplyCacheModeAll();      // 恢复 Effect + 挂回阴影 BitmapCache（GPU 路径防渐隐背板）
         Log.Write($"[{MonKey}] dynamic wallpaper OFF (release={release})");
     }
 
