@@ -723,13 +723,20 @@ public partial class MainWindow : Window
     private sealed class PileVisual
     {
         public Border Root = null!;
-        public Image Icon = null!;
+        // 真实内容扇形（后/中/前三层真图标斜向叠放）：非"其他"分组用，front 恒显示，mid/back 按成员数显示
+        public Image IconFront = null!, IconMid = null!, IconBack = null!;
+        // 语义占位（泛用叠层卡片 + 居中展开箭头）："其他"分组用——混杂类型没有单一代表缩略图
+        public Border GenericCard1 = null!, GenericCard2 = null!;
+        public UIElement ChevronBadge = null!;
         public TextBlock Label = null!;
         public Border LabelPlate = null!;
+        public string? FrontPath, MidPath, BackPath; // 已加载的真实图标路径缓存，跳过重复取图
     }
 
     private readonly Dictionary<string, PileVisual> _stackPiles = new();
     private string? _expandedStack;
+
+    private const string OtherKind = "其他"; // 混杂兜底分组：没有连贯视觉身份，走语义占位而非真实缩略图
 
     private static readonly (string Kind, string[] Exts)[] StackKindTable =
     {
@@ -744,7 +751,7 @@ public partial class MainWindow : Window
         var ext = Path.GetExtension(en.Path).ToLowerInvariant();
         foreach (var (kind, exts) in StackKindTable)
             if (exts.Contains(ext)) return kind;
-        return "其他";
+        return OtherKind;
     }
 
     private void ClearStacks()
@@ -782,33 +789,48 @@ public partial class MainWindow : Window
             .GroupBy(i => StackKindOf(i.Entry))
             .ToDictionary(g => g.Key,
                 g => g.OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList());
-        var kindOrder = StackKindTable.Select(k => k.Kind).Append("其他").Where(groups.ContainsKey).ToList();
+        var kindOrder = StackKindTable.Select(k => k.Kind).Append(OtherKind).Where(groups.ContainsKey).ToList();
+        if (_expandedStack != null && !kindOrder.Contains(_expandedStack)) _expandedStack = null; // 展开中的堆消失（清空/改型）
+
+        // 收起动画的"飞回堆位"批次：动画播完才 Collapsed。定时器触发时用当前 _expandedStack
+        // 重新核实——期间被再点开就跳过隐藏，不需要显式取消定时器，天然免疫重入。
+        var justCollapsing = new List<(IconVisual M, string Kind)>();
 
         foreach (var kind in kindOrder)
         {
             var members = groups[kind];
             var pile = GetOrCreatePile(kind);
-            pile.Icon.Source = IconLoader.Load(members[0].Entry.Path, IconPx);
-            pile.Label.Text = kind;
+            UpdatePileVisual(pile, kind, members);
             pile.Root.ToolTip = $"{kind} · {members.Count} 项";
             bool expanded = _expandedStack == kind;
             pile.LabelPlate.Background = expanded ? Accent.LabelBrush : Brushes.Transparent;
 
             var (l, t) = Take();
-            Canvas.SetLeft(pile.Root, Math.Round(l));
-            Canvas.SetTop(pile.Root, Math.Round(t));
+            double pl = Math.Round(l), pt = Math.Round(t); // 堆槽位坐标 = 收起成员的停靠点
+            Canvas.SetLeft(pile.Root, pl);
+            Canvas.SetTop(pile.Root, pt);
 
             foreach (var m in members)
             {
+                bool wasVisible = m.Root.Visibility == Visibility.Visible;
                 if (expanded)
                 {
+                    // 展开：坐标此刻已停在堆位（见下），从堆位飞向目标格 = 天然"从堆里展开"
                     m.Root.Visibility = Visibility.Visible;
                     var (ml, mt) = Take();
                     MoveIcon(m, ml, mt, animated);
                 }
+                else if (wasVisible)
+                {
+                    // 刚收起（含首次开启叠放）：先飞回堆位，播完动画再 Collapsed——不要瞬间消失
+                    MoveIcon(m, pl, pt, animated);
+                    if (animated) justCollapsing.Add((m, kind));
+                    else m.Root.Visibility = Visibility.Collapsed; // 非动画通道（冷启动）：直接落位
+                }
                 else
                 {
-                    m.Root.Visibility = Visibility.Collapsed;
+                    // 保持收起：坐标静默跟随堆位（堆增减会移动槽位），不触发可见动画
+                    MoveIcon(m, pl, pt, false);
                 }
             }
         }
@@ -818,18 +840,50 @@ public partial class MainWindow : Window
             IconCanvas.Children.Remove(_stackPiles[k].Root);
             _stackPiles.Remove(k);
         }
+
+        if (justCollapsing.Count > 0)
+        {
+            var batch = justCollapsing;
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                foreach (var (m, kind) in batch)
+                    if (Config.UseStacks && _expandedStack != kind)
+                        m.Root.Visibility = Visibility.Collapsed;
+            };
+            timer.Start();
+        }
+    }
+
+    /// <summary>真实内容扇形的一层：小尺寸/低透明度模拟"压在下面"，DropShadow 帮衬深浅分层
+    /// （很多文件图标本身透明底，紧贴壁纸时全靠阴影才分得出层次）。</summary>
+    private static Image MakePileLayer(double size, double opacity, HorizontalAlignment ha, VerticalAlignment va, Thickness margin, double shadowBlur, double shadowOpacity)
+    {
+        var im = new Image
+        {
+            Width = size, Height = size, Opacity = opacity,
+            HorizontalAlignment = ha, VerticalAlignment = va, Margin = margin,
+            SnapsToDevicePixels = true,
+            Effect = new DropShadowEffect { BlurRadius = shadowBlur, ShadowDepth = 1.5, Opacity = shadowOpacity, Color = Colors.Black },
+        };
+        RenderOptions.SetBitmapScalingMode(im, BitmapScalingMode.HighQuality);
+        return im;
     }
 
     private PileVisual GetOrCreatePile(string kind)
     {
         if (_stackPiles.TryGetValue(kind, out var existing)) return existing;
 
-        var img = new Image { Width = 60, Height = 60, SnapsToDevicePixels = true };
-        RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+        // 真实内容扇形：后→中→前三层真图标斜向叠放（前锚左下、后锚右上，mac 堆叠手感），
+        // 按成员数决定 mid/back 是否显示（见 UpdatePileVisual）。
+        var iconBack = MakePileLayer(46, 0.72, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0), 3, 0.3);
+        var iconMid = MakePileLayer(53, 0.88, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0, 6, 5, 0), 3, 0.35);
+        var iconFront = MakePileLayer(60, 1.0, HorizontalAlignment.Left, VerticalAlignment.Bottom, new Thickness(0), 4, 0.4);
 
-        // 堆叠观感：两片右上错位的半透明背板 + 左下顶层图标
-        var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
-        plate.Children.Add(new Border
+        // 语义占位："其他"这种混杂分组没有连贯的单一缩略图可代表，退回泛用叠层卡片 + 居中展开箭头
+        // （对照 macOS：Other/N items 就是这种通用"一沓文档"图标，不是真实内容）。
+        var card1 = new Border
         {
             Width = 54, Height = 54,
             CornerRadius = new CornerRadius(9),
@@ -838,8 +892,8 @@ public partial class MainWindow : Window
             BorderThickness = new Thickness(1),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
-        });
-        plate.Children.Add(new Border
+        };
+        var card2 = new Border
         {
             Width = 57, Height = 57,
             CornerRadius = new CornerRadius(9),
@@ -849,13 +903,34 @@ public partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 6, 5, 0),
-        });
-        plate.Children.Add(new Border
+        };
+        var chevron = new System.Windows.Shapes.Path
         {
-            Child = img,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Bottom,
-        });
+            Data = Geometry.Parse("M 0,0 L 9,9 L 18,0"),
+            Stroke = new SolidColorBrush(Color.FromArgb(0xE8, 0xFF, 0xFF, 0xFF)),
+            StrokeThickness = 3,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeLineJoin = PenLineJoin.Round,
+        };
+        var chevronBadge = new Border
+        {
+            Width = 34, Height = 34,
+            CornerRadius = new CornerRadius(9),
+            Background = new SolidColorBrush(Color.FromArgb(0x40, 0x00, 0x00, 0x00)),
+            Child = chevron,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
+        plate.Children.Add(card1);
+        plate.Children.Add(card2);
+        plate.Children.Add(iconBack);
+        plate.Children.Add(iconMid);
+        plate.Children.Add(iconFront);
+        plate.Children.Add(chevronBadge);
 
         var label = new TextBlock
         {
@@ -897,9 +972,47 @@ public partial class MainWindow : Window
         };
 
         IconCanvas.Children.Add(root);
-        var pv = new PileVisual { Root = root, Icon = img, Label = label, LabelPlate = labelPlate };
+        var pv = new PileVisual
+        {
+            Root = root, IconFront = iconFront, IconMid = iconMid, IconBack = iconBack,
+            GenericCard1 = card1, GenericCard2 = card2, ChevronBadge = chevronBadge,
+            Label = label, LabelPlate = labelPlate,
+        };
         _stackPiles[kind] = pv;
         return pv;
+    }
+
+    /// <summary>按分组内容刷新堆的观感：非"其他"用最多 3 个真实成员图标斜向叠放，
+    /// "其他"（混杂无连贯身份）用泛用叠层卡片 + 展开箭头。可见标签改两行"类别\nN 项"
+    /// （对照 macOS "Other / 14 items"，不再只藏在 tooltip 里）。</summary>
+    private void UpdatePileVisual(PileVisual pile, string kind, List<IconVisual> members)
+    {
+        bool generic = kind == OtherKind;
+        pile.GenericCard1.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
+        pile.GenericCard2.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
+        pile.ChevronBadge.Visibility = generic ? Visibility.Visible : Visibility.Collapsed;
+
+        pile.IconFront.Visibility = generic ? Visibility.Collapsed : Visibility.Visible;
+        pile.IconMid.Visibility = !generic && members.Count >= 2 ? Visibility.Visible : Visibility.Collapsed;
+        pile.IconBack.Visibility = !generic && members.Count >= 3 ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!generic)
+        {
+            SetLayerIcon(pile.IconFront, ref pile.FrontPath, members[0].Entry.Path);
+            if (members.Count >= 2) SetLayerIcon(pile.IconMid, ref pile.MidPath, members[1].Entry.Path);
+            if (members.Count >= 3) SetLayerIcon(pile.IconBack, ref pile.BackPath, members[2].Entry.Path);
+        }
+
+        pile.Label.Text = $"{kind}\n{members.Count} 项";
+    }
+
+    /// <summary>只在成员路径变化时才重新取图——LayoutStacks 每次重排都会跑到这里，
+    /// 裸取图是较贵的 shell COM 往返，缓存路径避免同一张图反复取（尤其三层扇形后 3 倍开销）。</summary>
+    private static void SetLayerIcon(Image img, ref string? cachedPath, string path)
+    {
+        if (cachedPath == path) return;
+        img.Source = IconLoader.Load(path, IconPx);
+        cachedPath = path;
     }
 
     /// <summary>新图标/整理时的排列顺序：默认名称，_arrangeOrder 指定时按日期/大小/类型。回收站置顶。</summary>

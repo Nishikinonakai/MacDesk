@@ -47,6 +47,13 @@ Windows desktop does.
   clipboard (`CF_HDROP` + *Preferred DropEffect*); cut items dim until pasted.
 - **Sort / clean-up** — "Arrange to mac grid" and a **Sort By** submenu
   (name / date / size / kind), both one-shot and undoable.
+- **Use Stacks** (background menu) — macOS-style auto-grouping by kind. Closed
+  piles fan out up to three real member icons (actual thumbnails, not a flat
+  placeholder); kinds with no coherent thumbnail (the "Other" catch-all) fall
+  back to a generic layered-card glyph with a chevron badge, matching Finder.
+  Clicking a pile flies its members out of the pile position with a 350 ms
+  animation; clicking again gathers them back before collapsing. Doesn't touch
+  the canonical layout — turning Stacks off restores your exact arrangement.
 - **Free placement mode** (optional) — macOS `arrangeBy=none`: drop icons exactly
   where you release them, no grid snapping. Off by default; toggle in the
   background menu.
