@@ -176,8 +176,17 @@ internal static class NativeMenuPresenter
     // 右键目标是 .exe（或解析到 .exe 的快捷方式）时，自绘"用 Locale Emulator 运行"
     // 直接调 LEProc.exe -run。
 
-    private const uint ID_LE_RUN = 0x7201;
+    private const uint ID_LE_RUN = 0x7201, ID_NEWFOLDER_SEL = 0x7202;
     private static string? _leTarget; // Append 时解析（UI/STA 线程），Dispatch 时消费
+
+    /// <summary>多选文件菜单追加"用所选项目新建文件夹"（Finder 行为）。</summary>
+    public static void AppendSelectionItems(List<MenuSnapshot.Item> items, string[] paths)
+    {
+        var real = paths.Count(p => !p.StartsWith("::"));
+        if (real < 2) return;
+        items.Add(Sep());
+        items.Add(Cmd(ID_NEWFOLDER_SEL, $"用所选项目新建文件夹（{real} 项）"));
+    }
 
     private static readonly Lazy<string?> LeProcPath = new(() =>
     {
@@ -268,6 +277,7 @@ internal static class NativeMenuPresenter
                 }
                 catch (Exception ex) { Log.Write("OpenAs failed: " + ex.Message); }
                 return true;
+            case ID_NEWFOLDER_SEL: CommandChannel.Signal("NewFolderWithSelection"); return true;
             case ID_LE_RUN when _leTarget != null && LeProcPath.Value != null:
                 try
                 {

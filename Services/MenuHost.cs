@@ -211,7 +211,11 @@ internal static class MenuHost
 
                 uint cmd = System.Windows.Application.Current.Dispatcher.Invoke(() =>
                 {
-                    if (verb == "files") NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
+                    if (verb == "files")
+                    {
+                        NativeMenuPresenter.AppendSelectionItems(items, paths);
+                        NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
+                    }
                     return NativeMenuPresenter.Track(desktopHwnd, items, x, y);
                 });
                 Log.Write($"menu v2: {verb} shown ({items.Count} items, kind={reply.Kind}), cmd=0x{cmd:X}");

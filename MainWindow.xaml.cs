@@ -177,6 +177,7 @@ public partial class MainWindow : Window
         CommandChannel.Listen("DeleteSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.DeleteSelection()));
         CommandChannel.Listen("RenameSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.RenameFirstSelected()));
         CommandChannel.Listen("PropertiesSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.ShowSelectionProperties()));
+        CommandChannel.Listen("NewFolderWithSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.CreateFolderWithSelection()));
     }
 
     /// <summary>当前持有选中项的窗口（菜单动词的作用对象；右键弹菜单前必然已设选中）。</summary>
@@ -1421,6 +1422,41 @@ public partial class MainWindow : Window
         return new Point(l + CellW / 2, t + CellH / 2);
     }
 
+    /// <summary>用所选项目新建文件夹（Finder 行为）：建夹坐在第一个选中项的位置、
+    /// 选中项全部移入、进入重命名。多选右键菜单的自定义项触发。</summary>
+    private void CreateFolderWithSelection()
+    {
+        var items = _selection.Select(s => s.Entry.Path).Where(p => !p.StartsWith("::")).ToArray();
+        if (items.Length == 0) return;
+        try
+        {
+            string baseDir = DesktopItemProvider.UserDesktop;
+            string name = "新建文件夹";
+            string path = Path.Combine(baseDir, name);
+            for (int n = 2; Directory.Exists(path) || File.Exists(path); n++)
+            {
+                name = $"新建文件夹 ({n})";
+                path = Path.Combine(baseDir, name);
+            }
+            // 项目搬走后文件夹坐第一个选中项的位置（Finder 行为）
+            var first = _selection.FirstOrDefault(s => !s.Entry.Path.StartsWith("::"));
+            if (first?.Canon != null)
+            {
+                LayoutFile.Set(MonKey, name, first.Canon);
+                LayoutFile.Save();
+            }
+            Directory.CreateDirectory(path);
+            MoveIntoFolder(items, path);
+            Desktop.RefreshAll();
+            if (_icons.TryGetValue(path, out var iv))
+            {
+                SelectOnly(iv);
+                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => StartRename(iv));
+            }
+        }
+        catch { SystemSounds.Beep.Play(); }
+    }
+
     private void CreateNewFolder()
     {
         try
@@ -1498,6 +1534,16 @@ public partial class MainWindow : Window
             if (ke.Key == Key.Enter) { CommitRename(); ke.Handled = true; }
             else if (ke.Key == Key.Escape) { CancelRename(); ke.Handled = true; }
         };
+        // Tab 顺移重命名（Finder 行为）：提交当前，接着改下一个图标；Shift+Tab 反向。
+        // Tab 是焦点导航键，必须在 Preview 阶段拦（KeyDown 已被 KeyboardNavigation 吃掉）
+        _renameBox.PreviewKeyDown += (_, ke) =>
+        {
+            if (ke.Key != Key.Tab) return;
+            var next = AdjacentIcon(iv, backward: Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));
+            CommitRename();
+            if (next != null) { SelectOnly(next); StartRename(next); }
+            ke.Handled = true;
+        };
         _renameBox.LostKeyboardFocus += (_, _) => CommitRename();
 
         Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
@@ -1509,6 +1555,21 @@ public partial class MainWindow : Window
                 : Math.Max(0, _renameBox.Text.Length - Path.GetExtension(_renameBox.Text).Length);
             _renameBox.Select(0, selLen);
         });
+    }
+
+    /// <summary>视觉顺序（mac 右上列流：列从右往左、列内从上往下）里的相邻图标。</summary>
+    private IconVisual? AdjacentIcon(IconVisual from, bool backward)
+    {
+        static double L(IconVisual i) { var v = Canvas.GetLeft(i.Root); return double.IsNaN(v) ? 0 : v; }
+        static double T(IconVisual i) { var v = Canvas.GetTop(i.Root); return double.IsNaN(v) ? 0 : v; }
+        var ordered = _icons.Values
+            .Where(i => !i.Entry.Path.StartsWith("::"))
+            .OrderByDescending(i => Math.Round(L(i)))
+            .ThenBy(T)
+            .ToList();
+        int idx = ordered.IndexOf(from);
+        if (idx < 0 || ordered.Count < 2) return null;
+        return ordered[(idx + (backward ? -1 : 1) + ordered.Count) % ordered.Count];
     }
 
     private void CommitRename()
@@ -1606,6 +1667,9 @@ public partial class MainWindow : Window
     private void OnDesktopDragEnter(object sender, DragEventArgs e)
     {
         ComputeDragEffects(e);
+        // 缓存本次拖拽的路径集（悬停命中要排除拖拽项自身，每帧解析数据对象太贵）
+        _dragOverPaths = InternalDragPaths(e.Data)
+            ?? (e.Data.GetDataPresent(DataFormats.FileDrop) ? (string[])e.Data.GetData(DataFormats.FileDrop)! : Array.Empty<string>());
         _dropHelper ??= ShellDrag.CreateDropTargetHelper();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
@@ -1622,16 +1686,68 @@ public partial class MainWindow : Window
             Native.GetCursorPos(out var pt);
             try { _dropHelper.DragOver(ref pt, (uint)e.Effects); } catch { }
         }
+        UpdateSpringTarget(e.GetPosition(IconCanvas));
     }
 
     private void OnDesktopDragLeave(object sender, DragEventArgs e)
     {
         try { _dropHelper?.DragLeave(); } catch { }
+        ClearSpring();
+    }
+
+    // ── 文件夹悬停高亮 + 弹簧打开（Finder 手感：实测规格 0.5s） ──
+    // OLE 在悬停期间持续回调 DragOver（不动鼠标也来），时间戳判断即可，无需定时器。
+
+    private string[] _dragOverPaths = Array.Empty<string>();
+    private IconVisual? _springTarget;
+    private DateTime _springStart;
+    private bool _sprung;
+
+    private void UpdateSpringTarget(Point pos)
+    {
+        var target = DropTargetIconAt(pos, _dragOverPaths);
+        if (!ReferenceEquals(target, _springTarget))
+        {
+            HighlightDropTarget(_springTarget, false);
+            _springTarget = target;
+            _springStart = DateTime.UtcNow;
+            _sprung = false;
+            HighlightDropTarget(target, true); // 回收站也高亮（它是合法落点），弹簧只对真文件夹
+        }
+        else if (target != null && !_sprung
+                 && (DateTime.UtcNow - _springStart).TotalMilliseconds >= 500
+                 && Directory.Exists(target.Entry.Path))
+        {
+            _sprung = true; // 同一目标只弹一次，移开重悬停才再弹
+            try
+            {
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{target.Entry.Path}\"") { UseShellExecute = false });
+                Log.Write($"spring-open: {target.Entry.DisplayName}");
+            }
+            catch (Exception ex) { Log.Write("spring open failed: " + ex.Message); }
+        }
+    }
+
+    private void HighlightDropTarget(IconVisual? iv, bool on)
+    {
+        if (iv == null) return;
+        bool lit = on || _selection.Contains(iv); // 取消高亮时恢复真实选中态视觉
+        iv.IconPlate.Background = lit ? SelIconBg : Brushes.Transparent;
+        iv.LabelPlate.Background = lit ? SelLabelBg : Brushes.Transparent;
+    }
+
+    private void ClearSpring()
+    {
+        HighlightDropTarget(_springTarget, false);
+        _springTarget = null;
+        _sprung = false;
+        _dragOverPaths = Array.Empty<string>();
     }
 
     private void OnDesktopDrop(object sender, DragEventArgs e)
     {
         e.Handled = true;
+        ClearSpring();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
             Native.GetCursorPos(out var pt);
