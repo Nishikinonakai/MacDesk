@@ -61,7 +61,11 @@ begin
 end;
 
 // 升级路径：先让已装副本优雅退出（--quit 会向运行中的实例发退出信号，
-// 该实例还原原生桌面图标、停看门狗后退出）
+// 该实例还原原生桌面图标、停看门狗后退出，菜单宿主盯主进程自退）。
+// 优雅退出后再兜底强杀任何残留进程：短命的一次性 helper（右键 --contextmenu、
+// 探针 --menuprobe）不受 --quit 管，卡住时会一直载着自包含运行时 DLL（clrjit.dll 等），
+// 让原地覆盖文件失败（DeleteFile 错误码 5 Access denied）。等 --quit 走完（主进程已还原
+// 原生图标）后 taskkill 只清扫这些残留 helper，不影响还原逻辑。
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var R: Integer;
 begin
@@ -69,6 +73,8 @@ begin
   begin
     Exec(ExpandConstant('{app}\MacDesk.exe'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, R);
     Sleep(3000);
+    Exec('taskkill.exe', '/F /IM MacDesk.exe', '', SW_HIDE, ewWaitUntilTerminated, R);
+    Sleep(500);
   end;
   Result := '';
 end;
@@ -82,6 +88,9 @@ begin
     begin
       Exec(ExpandConstant('{app}\MacDesk.exe'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, R);
       Sleep(4000);
+      // 同 PrepareToInstall：兜底强杀残留 helper，否则锁着的 DLL 让卸载删文件失败
+      Exec('taskkill.exe', '/F /IM MacDesk.exe', '', SW_HIDE, ewWaitUntilTerminated, R);
+      Sleep(500);
     end;
     // 自启注册指向 {app}，卸载后会悬空——一并清掉（两种机制都清）
     RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'MacDesk');
