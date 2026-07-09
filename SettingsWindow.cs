@@ -156,6 +156,10 @@ internal sealed class SettingsWindow : Window
 
         Content = root;
         _nav.SelectedIndex = 0;
+
+        // 重获焦点时若停在外观页就重建：让图标大小滑杆/强调色同步 Ctrl+/- 等外部改动
+        // （只在外观页做——该页无文本输入框，重建无副作用；菜单页有黑名单输入框不能重建）。
+        Activated += (_, _) => { if ((_nav.SelectedItem as ListBoxItem)?.Tag as string == "appearance") ShowPage("appearance"); };
     }
 
     private Style NavItemStyle()
@@ -290,6 +294,102 @@ internal sealed class SettingsWindow : Window
     }
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
+
+    /// <summary>图标大小滑杆（macOS Dock 设置观感）：轨道 + 白圆钮 + 各档刻度，默认档用强调色
+    /// 加粗刻度明确标注、拖动吸附到档位。跨档时即时 Desktop.SetIconSize 预览（不是每像素刷）。
+    /// 自绘（本项目控件全代码构，避开 WPF Slider 模板 Track 的 FrameworkElementFactory 坑）。</summary>
+    private UIElement IconSizeSlider()
+    {
+        const double W = 220, D = 18, R = D / 2, RailH = 4, MidY = 12;
+        var steps = Desktop.IconSizeSteps;
+        var accent = new SolidColorBrush(Accent.Current);
+
+        double CenterX(int value) => R + (Math.Clamp(value, 48, 128) - 48) / 80.0 * (W - D);
+        int NearestStep(double x)
+        {
+            double f = Math.Clamp((x - R) / (W - D), 0, 1);
+            int idx = Math.Clamp((int)Math.Round(f * (steps.Length - 1)), 0, steps.Length - 1);
+            return steps[idx];
+        }
+
+        var canvas = new Canvas { Width = W, Height = 24 };
+        var rail = new Border { Width = W - 2, Height = RailH, CornerRadius = new CornerRadius(RailH / 2), Background = FieldBorder };
+        Canvas.SetLeft(rail, 1); Canvas.SetTop(rail, MidY - RailH / 2);
+        canvas.Children.Add(rail);
+        var fill = new Border { Height = RailH, CornerRadius = new CornerRadius(RailH / 2), Background = accent };
+        Canvas.SetLeft(fill, 1); Canvas.SetTop(fill, MidY - RailH / 2);
+        canvas.Children.Add(fill);
+
+        foreach (var s in steps)
+        {
+            bool dft = s == Desktop.DefaultIconSize;
+            var tick = new Border
+            {
+                Width = dft ? 2 : 1,
+                Height = dft ? 12 : 7,
+                Background = dft ? accent : Subtle,
+                CornerRadius = new CornerRadius(1),
+            };
+            Canvas.SetLeft(tick, CenterX(s) - (dft ? 1 : 0.5));
+            Canvas.SetTop(tick, MidY - (dft ? 6 : 3.5));
+            canvas.Children.Add(tick);
+        }
+
+        var thumb = new Border
+        {
+            Width = D, Height = D, CornerRadius = new CornerRadius(R),
+            Background = Brushes.White,
+            BorderBrush = FieldBorder, BorderThickness = new Thickness(0.5),
+            Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 4, ShadowDepth = 0.5, Opacity = 0.35 },
+            Cursor = Cursors.Hand,
+        };
+        Canvas.SetTop(thumb, MidY - R);
+        canvas.Children.Add(thumb);
+
+        void Place(int value)
+        {
+            double cx = CenterX(value);
+            Canvas.SetLeft(thumb, cx - R);
+            fill.Width = Math.Max(0, cx - 1);
+        }
+        Place(Config.IconSize);
+
+        // 拖动时滑钮实时吸附到档位（纯视觉），松手才真正应用一次——SetIconSize 会 teardown+重建
+        // 桌面（含 shell 重取图），每跨档都做会连做 5 次卡顿；松手应用一次既跟手又不抖。
+        int pending = Config.IconSize;
+        void Preview(double x) { pending = NearestStep(x); Place(pending); }
+        canvas.MouseLeftButtonDown += (_, e) => { canvas.CaptureMouse(); Preview(e.GetPosition(canvas).X); e.Handled = true; };
+        canvas.MouseMove += (_, e) =>
+        {
+            if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed && canvas.IsMouseCaptured)
+                Preview(e.GetPosition(canvas).X);
+        };
+        canvas.MouseLeftButtonUp += (_, e) =>
+        {
+            if (!canvas.IsMouseCaptured) return;
+            canvas.ReleaseMouseCapture();
+            Preview(e.GetPosition(canvas).X);
+            Desktop.SetIconSize(pending); // 一次应用（相同值内部早退）
+        };
+
+        // 端点 + 默认标注
+        var captions = new Canvas { Width = W, Height = 16, Margin = new Thickness(0, 2, 0, 0) };
+        void Cap(string text, double centerX, Brush brush, FontWeight weight)
+        {
+            var tb = new TextBlock { Text = text, FontSize = 10, Foreground = brush, FontWeight = weight };
+            tb.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+            Canvas.SetLeft(tb, Math.Clamp(centerX - tb.DesiredSize.Width / 2, 0, W - tb.DesiredSize.Width));
+            captions.Children.Add(tb);
+        }
+        Cap(L.T("小", "Small"), CenterX(48), Subtle, FontWeights.Normal);
+        Cap(L.T("默认", "Default"), CenterX(Desktop.DefaultIconSize), accent, FontWeights.SemiBold);
+        Cap(L.T("大", "Large"), CenterX(128), Subtle, FontWeights.Normal);
+
+        var wrap = new StackPanel { Width = W };
+        wrap.Children.Add(canvas);
+        wrap.Children.Add(captions);
+        return wrap;
+    }
 
     /// <summary>mac 风扁平按钮：圆角 + 主题色背板，悬停微亮/微暗。整窗通过
     /// Resources[typeof(Button)] 隐式套用，7 处按钮调用点都不用改。</summary>
@@ -433,6 +533,12 @@ internal sealed class SettingsWindow : Window
         };
         startup.Children.Add(Row(L.T("语言 / Language", "Language / 语言"), langBox,
             L.T("重启 MacDesk 生效", "Takes effect after restarting MacDesk")));
+        startup.Children.Add(Separator());
+        startup.Children.Add(Row(L.T("空格预览文件", "Space to Preview"), Toggle(Config.SpacePreview, v =>
+        {
+            Config.SpacePreview = v;
+            Config.Save();
+        }), L.T("选中文件后按空格，调用已安装的第三方预览器（QuickLook / Seer / PowerToys Peek 0.95+）。\n没装任何预览器时空格无效（不影响首字母定位）。", "With a file selected, press Space to invoke an installed third-party previewer (QuickLook / Seer / PowerToys Peek 0.95+).\nDoes nothing if none is installed (type-ahead selection still works).")));
         p.Children.Add(Card(startup));
 
         var layoutSec = new StackPanel();
@@ -556,6 +662,11 @@ internal sealed class SettingsWindow : Window
         sec.Children.Add(Row(L.T("强调色", "Accent Color"), palette, L.T("选中标签与框选的颜色，即时生效", "Color of selected labels and the marquee; applies immediately")));
         p.Children.Add(Card(sec));
 
+        var sizeSec = new StackPanel();
+        sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
+            L.T("拖动调整桌面图标大小，吸附到档位；也可按 Ctrl 加 +/- 逐档调整（与访达一致）。", "Drag to size desktop icons (snaps to steps); or press Ctrl with +/- to step (like Finder).")));
+        p.Children.Add(Card(sizeSec));
+
         var wall = new StackPanel();
         wall.Children.Add(Row(L.T("动态壁纸（Wallpaper Engine）", "Live Wallpaper (Wallpaper Engine)"), Toggle(Config.DynamicWallpaper, v =>
         {
@@ -589,6 +700,33 @@ internal sealed class SettingsWindow : Window
     private UIElement BuildMenuPage()
     {
         var p = Page(L.T("右键菜单", "Context Menu"));
+
+        // ── 空白处原生菜单开关 ──
+        var nativeSec = new StackPanel();
+        nativeSec.Children.Add(Row(L.T("空白处使用 Windows 原生菜单", "Native Windows Menu on Empty Desktop"),
+            Toggle(Config.NativeBackgroundMenu, v => { Config.NativeBackgroundMenu = v; Config.Save(); }),
+            L.T("桌面空白处右键改为弹 Windows 原生桌面菜单", "Right-click empty desktop shows the native Windows desktop menu")));
+        nativeSec.Children.Add(Separator());
+        nativeSec.Children.Add(new TextBlock
+        {
+            Text = L.T(
+                "操作逻辑（开启后）：\n" +
+                "• 空白处右键 = Windows 原生菜单（Explorer 弹它自己的现代或经典菜单，取决于你的系统设置——我们不重建，你系统里是哪款就出哪款）。\n" +
+                "• 按住 Alt 再右键 = MacDesk 自制菜单（整理、排序方式、使用叠放、更换壁纸、设置）。\n" +
+                "• 图标上的右键不受影响，始终是原生 shell 菜单。\n" +
+                "注意：原生菜单里的\"查看\"\"排序方式\"\"显示桌面图标\"等作用于被隐藏的原生图标层，对 MacDesk 的图标不起作用——要排列 MacDesk 图标，用 Alt 菜单里的整理 / 排序方式 / 使用叠放。",
+                "How it works (when on):\n" +
+                "• Right-click empty desktop = the native Windows menu (Explorer shows its own modern or classic menu per your system — we don't rebuild it, you get whichever your system uses).\n" +
+                "• Hold Alt and right-click = the MacDesk menu (Clean Up, Sort By, Use Stacks, Change Wallpaper, Settings).\n" +
+                "• Right-clicking an icon is unaffected and always shows the native shell menu.\n" +
+                "Note: the native menu's View / Sort by / Show desktop icons act on the hidden native icon layer and do nothing to MacDesk icons — to arrange MacDesk icons use Clean Up / Sort By / Use Stacks in the Alt menu."),
+            FontSize = 11,
+            Foreground = Subtle,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 10, 0, 6),
+        });
+        p.Children.Add(Card(nativeSec));
+
         // 每次建页都新建控件：字段单例会滞留在上一次页面的可视树里，重挂载抛
         // "already the logical child" 被兜底吞掉 → 页面点不进去（机主实测 bug）
         var blacklist = new ListBox { Height = 150, BorderThickness = new Thickness(0), Background = FieldBg, Foreground = TextFg };

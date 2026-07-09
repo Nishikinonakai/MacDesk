@@ -1048,3 +1048,99 @@ release zip 只含 CI 构建产物，**不可能被发版带走**。
   全程实测，本次中文界面），双语 release notes。
 - **收工状态**：机主拍板"用着挺满意，以后看真实用户反馈再修"。backlog 仅剩两小件
   （场景型壁纸点击转发验证-无样本、安装器全新安装退外部实例）。项目进入维护模式。
+
+## 2026-07-09 三功能批（图标尺寸档 / 原生背景菜单 / 空格预览）— 机主工单，⚠️代码完成待真机
+
+维护模式后机主提的四条需求；评估后第 3 条（图标菜单全外包 Explorer）定为**不做**（我们的
+图标菜单本就是原生 shell 菜单内容，"自制"只是宿主方式，是被第三方扩展 in-proc 崩溃 +
+前台战争两条硬约束逼出来的，外包给隐藏的原生 ListView 会丢多选/叠放/自定义动词，纯倒退），
+其结论写进第 2 条的设置文案。其余三条已实现、编译干净、经对抗式自审修完 6 处问题。
+
+### Feature 4：空格预览第三方插件（`Services/FilePreview.cs`，新文件）
+- **不模拟"在 Explorer 里按空格"**（预览器的全局钩子不认识我们的窗口、读不到隐藏 ListView
+  的选中集）——改走各预览器给第三方文件管理器的**官方外部激活接口**（对齐 Files 的
+  IPreviewPopupProvider 实现）。三 provider，探测优先级 QuickLook > Seer > Peek，首个可用者接手：
+  - **QuickLook**：命名管道 `\\.\pipe\QuickLook.App.Pipe.<SID>`（后缀是 **WindowsIdentity SID
+    不是用户名**），写一行 UTF-8**无 BOM** `QuickLook.App.PipeMessages.Toggle|<完整路径>`（`\r\n`
+    结尾，`PipeDirection.Out`）。可用性探测走**枚举 `\\.\pipe\`**（比 500ms 的 ConnectAsync
+    探测快，没装时立刻放行给下家）。
+  - **Seer**：`FindWindow("SeerWindowClass")` + `WM_COPYDATA(dwData=5000, cbData=(len+1)*2,
+    Unicode 路径)`，SendMessage 丢后台线程（同步阻塞跨进程调用别卡 UI，HGlobal 活到返回）。
+  - **PowerToys Peek**：**v0.95（2025-11）起才有 CLI** `PowerToys.Peek.UI.exe "<路径>"`（Peek 无
+    IPC，只有命令行）。Uninstall 注册表找 InstallLocation→WinUI3Apps。exe 路径整会话记忆化。
+- 桌面接线：`OnKeyDown` 裸空格（`mods==None`）+ 选中项非虚拟 → `FilePreview.Toggle`；方向键
+  换焦点时 `_previewOpen` 为真则 `Switch` 跟随（macOS scrub 手感，Peek 无 switch 留白）。
+  **Toggle 成功才置 e.Handled**——没装预览器时空格落回首字母定位（不影响 type-ahead）。
+- 设置：通用页开关"空格预览文件"（默认开）。**home-win 只装了 PowerToys**，Peek≥0.95 即可测。
+
+### Feature 2：空白处原生右键菜单开关（默认关）
+- 机理 = 把当年"双菜单 bug"变成 feature：不吞 `WM_CONTEXTMENU` 时 DefWindowProc 会把它转发
+  给父 DefView，Explorer 就弹**它自己的**桌面菜单（现代/经典按用户系统，我们不重建）。
+- 实现：**hook 里的 WM_CONTEXTMENU 无条件吞噬保持不变**（避免图标双菜单 + hook 无 WPF 上下文
+  读不了 Alt），决策全放 `OnCanvasRightClick`：开关开 + 未按 Alt → `PostMessage(DefViewHwnd,
+  WM_CONTEXTMENU, _hwnd, MAKELPARAM(屏x,屏y))` 让 Explorer 自己弹（**必须先判句柄非空**：
+  PostMessage(NULL) 会投本线程队列并返回 true，早退成死右键）；Alt+右键或开关关 → 自制菜单。
+- 设置：右键菜单页开关 + **明确写好操作逻辑**（含机主没想起来的细节：原生菜单里的"查看/
+  排序方式/显示桌面图标"作用于被隐藏的原生图标层，对 MacDesk 图标无效，排列请用 Alt 菜单）。
+- ⚠️**真机待验**：wParam=_hwnd 还是要 ListView、现代还是经典菜单出、有无 insta-dismiss——源码
+  层无法确认，DefView 收不下时已有落回自制菜单的兜底。
+
+### Feature 1：图标尺寸档（Ctrl +/- 与外观页滑杆）
+- 几何常量 `CellW/CellH/GapX/GapY/PitchX/PitchY` 从 `const` 改**实例 getter**，全乘缩放因子
+  `S = IconSize/64`（base 图标 64 DIU，S=1 时 = 原 96×104/16×8/pitch 112，**默认档几何逐字节
+  等价**）。`IconPx` 改按 `64·S·_dpiK` 现算并 clamp 256..512（4K@300% 大档 96×3=288 超旧 256
+  常量致糊的修复）。唯一用几何的 static 方法 `CellToCanon` 去 static；另修两处 static 上下文
+  （`SetLayerIcon`/局部 `H()`）。
+- **红线（v3）**：改档=切分辨率同理，只**现场推导**显示位置、**绝不回写 Canon**。
+  `Desktop.SetIconSize` → 各窗 `TearDownVisuals`（清空图标/问号/堆——因 `RefreshItems` 只为新
+  路径建图标，不清空就不会按新档重建）→ `RefreshAll`（经现有工厂在新 S 下重建、重跑
+  TruncateLabel、Canon 从 EffectiveCanon 只读回挂）→ `LayoutAllWindows(animated:true)`。
+  `MoveElement` 对新建元素（Canvas.Left=NaN）**瞬置无飞入**，所以改档 = 干净瞬间重排。
+- 视觉工厂全部 ×S：CreateIconVisual / CreateMissingVisual / GetOrCreatePile+MakePileLayer
+  （chevron 用 LayoutTransform 缩放避开路径字符串小数分隔符本地化坑）/ LabelFits 测量 / 重命名框。
+- Ctrl +/- 在 OcnKeyDown（主键区 OemPlus 是 Shift 态 → **容忍 Shift**：`(mods & ~Shift)==Control`，
+  否则 Ctrl+Shift+= 精确不等 Control 漏掉）；小键盘 Add/Subtract 也接。档位
+  `{48,64,80,96,112,128}`（S=0.75~2.0），默认 64。
+- 滑杆自绘（本项目控件全代码构，避开 WPF Slider 模板 Track 的 FEF 坑）：轨道+白圆钮+各档刻度，
+  **默认档强调色加粗刻度+"默认"标注**，拖动**吸附到档位**、**松手才应用一次**（每跨档全量
+  重建×5 会卡，松手一次既跟手又不抖）。设置窗重获焦点时若在外观页则重建，同步 Ctrl+/- 外部改动。
+
+### 对抗式自审（4 维 finder → 每条独立 verify，16 agent）修掉的 6 处
+1. Ctrl+Shift+= 漏掉（主键区 +）→ 容忍 Shift。2. 原生菜单 DefView 句柄为空时 PostMessage(NULL)
+返回 true 早退成死右键 → 先判非空。3. 空格无修饰键守卫（Ctrl/Shift/Alt+Space 不抢）。
+4. 空格 e.Handled 应条件置（没装预览器落回 type-ahead，与注释一致）。5. Switch 每次方向键在
+UI 线程枚举命名管道 → 直发不重探测（发送对已关预览器安全 no-op）。6. 滑杆拖动每跨档全量重建
+→ 松手应用一次；Peek exe 路径记忆化。误报 1 条（TearDownVisuals 悬挂 rename/marquee——
+OnKeyDown 在 `_renameBox!=null` 时早退、滑杆在设置窗故 rename 已提交，验证驳回）。
+
+### 真机验证（2026-07-09，home-win WO-4 单屏 1080p@100%，全部通过）
+部署舞步照旧（`--quit` → scp publish/ 三件 → `--hide-native` 重启；DLL 哈希核对确认新构建）。
+- **F1**：设 IconSize=48/64/96 重启逐档看渲染（图标+标签+叠放堆+扇形全比例缩放、标签清晰无
+  错位）；实时 Ctrl +/- 双向（64→96→64）叠放堆动画重排；外观页自绘滑杆拖动落 112、单击档位
+  重置、默认标记+吸附正确、深色主题对。**红线实锤：改档往返（含实时路径）layout.json SHA256
+  逐字节不变（0CF7…D0F 全程未变）**。
+- **F2**：settings.json 开 NativeBackgroundMenu 重启 → 裸右键弹出 **Explorer 真原生菜单**
+  （经典完整版=Win11"显示更多选项"那个，含 AMD/Dell Display Manager/Open in Terminal/
+  Personalize 等全套 shell 扩展），**稳定无 insta-dismiss**；Alt+右键→自制菜单（使用叠放/
+  分组依据/更换壁纸/MacDesk 设置）。wParam=_hwnd 直接成立没走 ListView 兜底。
+- **F4**：选中图标→Space→预览正确弹出。设置窗三控件（空格预览开关/图标大小滑杆/原生菜单开关+
+  逻辑文案）深色渲染全对。
+- **UIPI 坑（测试方法沉淀）**：机主开着的"管理员:PowerToys 设置"窗霸占前台时，普通权限代理
+  **无法注入任何合成输入**（点击/按键/Win+D 全被丢、连启动的新窗口都抢不过提权前台）——请机主
+  关掉提权窗才能继续。DHCP 重启后 home-win 换 IP（.20→.8），ARP 扫 + 逐个敲 18800 找回。
+
+### 🐛 真机挖出并修复的 bug（WaitNamedPipe，commit 同批）
+`FilePreview.QuickLookAvailable()` 原用 `Directory.EnumerateFiles(@"\\.\pipe\")` 枚举命名管道
+检测 QuickLook——**.NET Framework（测试用的 Windows PowerShell 5.1）能枚举，但 .NET 10
+（MacDesk 运行时）对 `\\.\pipe\` 设备路径抛异常**，被 try/catch 吞掉 → QuickLook 装了也
+检测不到、误 fall 到 Peek。改用 **`WaitNamedPipe`（kernel32，跨运行时可靠：存在近瞬 true、
+不存在立即 false，无枚举/500ms 之弊）**。真机装 QuickLook 4.5.0 后实测 Space→QuickLook 正确
+弹出（日志验证路由）。**教训：`\\.\pipe\` 枚举在 .NET Core/5+ 与 .NET Framework 行为不同，
+别拿 Windows PowerShell 的结果推断 .NET 10 进程——真机 + 真插件才暴露得出来。**
+
+### 环境交互（非我方 bug，机主裁决卸载 QuickLook 还原 Peek-only）
+装 QuickLook 测试时发现机主的 PowerToys Peek（0.100.2）也响应裸 Space，但 MacDesk 藏了原生
+图标 → Peek 读空选中弹"Search in Microsoft Store"空窗；我方 FilePreview 传真实文件路径故能正确
+预览。两预览器都抢 Space 会多个空 Peek 窗。测毕机主选择卸载 QuickLook（winget uninstall +
+清桌面 QuickLook.lnk）还原原状。Peek 快捷键实为 Ctrl+Space（但裸 Space 也触发，疑 Peek 的
+Explorer-Space 情境激活，属机主 PowerToys 配置）。

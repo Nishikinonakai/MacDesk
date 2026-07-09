@@ -176,4 +176,34 @@ internal static class Desktop
         foreach (var w in Windows) if (w.Attached) w.LayoutAll(animated);
     }
 
+    /// <summary>图标尺寸档（base 图标 DIU）。Ctrl +/- 与外观页滑杆走这套；64=默认。</summary>
+    public static readonly int[] IconSizeSteps = { 48, 64, 80, 96, 112, 128 };
+    public const int DefaultIconSize = 64;
+
+    /// <summary>Ctrl +/-：按档位增减图标大小（与 Finder 一致）。取当前值最近的档，移动 delta。</summary>
+    public static void StepIconSize(int delta)
+    {
+        int cur = Config.IconSize, idx = 0, best = int.MaxValue;
+        for (int i = 0; i < IconSizeSteps.Length; i++)
+        {
+            int d = Math.Abs(IconSizeSteps[i] - cur);
+            if (d < best) { best = d; idx = i; }
+        }
+        idx = Math.Clamp(idx + delta, 0, IconSizeSteps.Length - 1);
+        SetIconSize(IconSizeSteps[idx]);
+    }
+
+    /// <summary>设图标尺寸并全量重建（经现有工厂在新档下重建，红线不破：只重算显示，不写 Canon）。
+    /// 先 teardown 全部视觉是因为 RefreshItems 只为新路径建图标——不清空就不会按新尺寸重建。</summary>
+    public static void SetIconSize(int size)
+    {
+        size = Math.Clamp(size, 32, 160);
+        if (Config.IconSize == size) return;
+        Config.IconSize = size;
+        Config.Save();
+        foreach (var w in Windows) if (w.Attached) w.TearDownVisuals();
+        RefreshAll();
+        LayoutAllWindows(animated: true);
+    }
+
 }

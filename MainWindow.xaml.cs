@@ -36,12 +36,31 @@ namespace MacDesk;
 
 public partial class MainWindow : Window
 {
-    // mac 式网格（DIU）：112×112 方形格（对齐 Finder gridSpacing 实测值）
-    private const double CellW = 96, CellH = 104, GapX = 16, GapY = 8; // pitch = 112 × 112
+    // mac 式网格（DIU）：base（S=1）= 112×112 方形格（对齐 Finder gridSpacing 实测值）。
+    // 图标尺寸档只换缩放因子 S = IconSize/64（base 图标 64 DIU）；格/间距/字号/图源全随 S 现算，
+    // 重排现场推导显示位置、**绝不回写 Canon**（分辨率无关红线，切档同切分辨率一个道理）。
+    // 改档走 Desktop.SetIconSize → RebuildForScale（经现有工厂重建，见那里）。
+    private double S => Math.Clamp(Config.IconSize, 32, 160) / 64.0;
+    private double CellW => 96 * S;
+    private double CellH => 104 * S;
+    private double GapX => 16 * S;
+    private double GapY => 8 * S;
 
     private static readonly FontFamily LabelFontFamily = new("Segoe UI, Microsoft YaHei UI");
     private const double MarginTop = 14, MarginRight = 14, MarginBottom = 60, MarginLeft = 14;
-    private const int IconPx = 256; // 取图尺寸（高分屏 64 DIU × 3x 也够），低分辨率源是白边锯齿的元凶
+
+    /// <summary>取图尺寸 = 图标 DIU(64·S) × 本屏 DPI，现算：大档 + 高 DPI（4K@300% 96×3=288）
+    /// 会超旧的 256 常量致糊。下限 256（小档也留高清余量）、上限 512（shell 少有更大真源），
+    /// 按 64 取整界定 IconLoader 的 (ext,size) 缓存代数。_dpiK 是本窗口的，故 IconPx 是实例 getter。</summary>
+    private int IconPx
+    {
+        get
+        {
+            int px = (int)Math.Ceiling(64 * S * _dpiK);
+            px = (px + 63) / 64 * 64; // 向上取整到 64 的倍数
+            return Math.Clamp(px, 256, 512);
+        }
+    }
 
     /// <summary>本窗口负责的显示器（多显示器：每屏一个 MainWindow，见 Desktop 协调器）。</summary>
     internal MonitorInfo Monitor { get; }
@@ -73,6 +92,16 @@ public partial class MainWindow : Window
     private IconVisual? _focusIcon;
     private string _typeAhead = "";
     private DateTime _typeAheadAt = DateTime.MinValue;
+
+    // 空格预览是否已打开（方向键据此决定要不要让预览跟随；Esc/清选归零，见 FilePreview）
+    private bool _previewOpen;
+
+    /// <summary>空格预览的目标：焦点图标（在选中集内时）否则任一选中项；虚拟项/未选中返回 null。</summary>
+    private IconVisual? FocusItem =>
+        (_focusIcon != null && _selection.Contains(_focusIcon)) ? _focusIcon : _selection.FirstOrDefault();
+
+    private string? FocusPreviewPath =>
+        FocusItem is { } iv && !iv.Entry.Path.StartsWith("::") ? iv.Entry.Path : null;
 
     private sealed class IconVisual
     {
@@ -532,18 +561,18 @@ public partial class MainWindow : Window
         {
             Text = "?",
             Foreground = Brushes.White,
-            FontSize = 40,
+            FontSize = 40 * S,
             FontFamily = LabelFontFamily,
             FontWeight = FontWeights.Bold,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, -4, 0, 0),
+            Margin = new Thickness(0, -4 * S, 0, 0),
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.6 },
         };
         var plate = new Border
         {
-            Width = 58, Height = 58,
-            CornerRadius = new CornerRadius(12),
+            Width = 58 * S, Height = 58 * S,
+            CornerRadius = new CornerRadius(12 * S),
             Background = new SolidColorBrush(Color.FromArgb(0x42, 0xFF, 0xFF, 0xFF)),
             BorderBrush = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF)),
             BorderThickness = new Thickness(1),
@@ -553,7 +582,7 @@ public partial class MainWindow : Window
         };
         var iconPlate = new Border
         {
-            Height = 64 + 12, // 与真实图标 iconPlate（64 图 + 6×2 padding）同高，标签基线对齐
+            Height = (64 + 12) * S, // 与真实图标 iconPlate（64 图 + 6×2 padding）同高，标签基线对齐
             Child = plate,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
@@ -563,25 +592,25 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12,
+            FontSize = 12 * S,
             FontFamily = LabelFontFamily,
             FontWeight = FontWeights.Bold,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxHeight = 34,
+            MaxHeight = 34 * S,
             Opacity = 0.9,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
         {
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(5, 1, 5, 2),
+            CornerRadius = new CornerRadius(6 * S),
+            Padding = new Thickness(5 * S, 1, 5 * S, 2),
             Background = Brushes.Transparent,
             Child = label,
             HorizontalAlignment = HorizontalAlignment.Center,
-            MaxWidth = CellW - 4,
+            MaxWidth = CellW - 4 * S,
         };
 
         var stack = new StackPanel();
@@ -632,7 +661,7 @@ public partial class MainWindow : Window
     {
         var img = new Image
         {
-            Width = 64, Height = 64,
+            Width = 64 * S, Height = 64 * S,
             Source = IconLoader.Load(en.Path, IconPx),
             SnapsToDevicePixels = true,
         };
@@ -640,8 +669,8 @@ public partial class MainWindow : Window
 
         var iconPlate = new Border
         {
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(6),
+            CornerRadius = new CornerRadius(8 * S),
+            Padding = new Thickness(6 * S),
             Background = Brushes.Transparent,
             Child = img,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -652,14 +681,14 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12,
+            FontSize = 12 * S,
             // mac 质感：中英文都上 Bold（机主反馈 SemiBold 英文仍偏细；Windows 自带，免费合法）
             FontFamily = LabelFontFamily,
             FontWeight = FontWeights.Bold,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
-            MaxHeight = 34,
+            MaxHeight = 34 * S,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
         // 小字号必须走 Display 模式（对齐像素网格），配合 MoveIcon 的整数坐标吸附——
@@ -667,12 +696,12 @@ public partial class MainWindow : Window
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
         {
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(5, 1, 5, 2),
+            CornerRadius = new CornerRadius(6 * S),
+            Padding = new Thickness(5 * S, 1, 5 * S, 2),
             Background = Brushes.Transparent,
             Child = label,
             HorizontalAlignment = HorizontalAlignment.Center,
-            MaxWidth = CellW - 4,
+            MaxWidth = CellW - 4 * S,
         };
 
         var stack = new StackPanel();
@@ -709,13 +738,13 @@ public partial class MainWindow : Window
         var ft = new FormattedText(text,
             System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
             new Typeface(LabelFontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
-            12, Brushes.White, null, TextFormattingMode.Display,
+            12 * S, Brushes.White, null, TextFormattingMode.Display,
             VisualTreeHelper.GetDpi(this).PixelsPerDip)
         {
-            MaxTextWidth = CellW - 14, // labelPlate MaxWidth(CellW-4) − 左右 Padding(5+5)
+            MaxTextWidth = CellW - 14 * S, // labelPlate MaxWidth(CellW-4·S) − 左右 Padding(5·S+5·S)
             Trimming = TextTrimming.None,
         };
-        return ft.Height <= 34.5; // TextBlock MaxHeight=34（两行）
+        return ft.Height <= 34.5 * S; // TextBlock MaxHeight=34·S（两行）
     }
 
     /// <summary>Finder 行为：溢出两行时中间省略，尾部保"扩展名+3 字符"（尾部区分度高，
@@ -750,7 +779,8 @@ public partial class MainWindow : Window
 
     private (double W, double H) WorkSize => (RootGrid.ActualWidth, RootGrid.ActualHeight);
 
-    private const double PitchX = CellW + GapX, PitchY = CellH + GapY;
+    private double PitchX => CellW + GapX;
+    private double PitchY => CellH + GapY;
 
     /// <summary>规范锚距 → 当前尺寸下的显示左上角（固定间距、右上/近边锚定，只做屏内钳制）。</summary>
     private (double L, double T) CanonToPos(CanonPos c)
@@ -772,8 +802,10 @@ public partial class MainWindow : Window
         return new CanonPos(w - cx, fromBottom ? h - cy : cy, fromBottom);
     }
 
-    /// <summary>网格格 → 规范锚距（纯 col/row 的函数，与分辨率无关；网格恒上锚）。</summary>
-    private static CanonPos CellToCanon(int col, int row) =>
+    /// <summary>网格格 → 规范锚距（纯 col/row 的函数，与分辨率无关；网格恒上锚）。
+    /// 注：Canon 里烙进的是**当前档**的 pitch，但只对 Canon==null 的新图标/显式落点调用，
+    /// 已有图标切档时不经此路（LayoutAll 非空分支只推导显示位置），故红线不破。</summary>
+    private CanonPos CellToCanon(int col, int row) =>
         new(MarginRight + CellW / 2 + col * PitchX, MarginTop + CellH / 2 + row * PitchY, FromBottom: false);
 
     /// <summary>规范锚距 → 网格格（当前尺寸）。近边锚底的先换算回中心 Y。</summary>
@@ -1039,6 +1071,20 @@ public partial class MainWindow : Window
         foreach (var iv in _icons.Values) iv.Root.Visibility = Visibility.Visible;
     }
 
+    /// <summary>改图标尺寸档时清空全部视觉（图标/问号/堆），让 RefreshAll 按新档从工厂重建
+    /// （RefreshItems 只为新路径建图标，不清空就不会重建成新尺寸）。Canon 不动，重排现场推导。</summary>
+    internal void TearDownVisuals()
+    {
+        ClearStacks();
+        foreach (var iv in _icons.Values) IconCanvas.Children.Remove(iv.Root);
+        _icons.Clear();
+        foreach (var root in _missing.Values) IconCanvas.Children.Remove(root);
+        _missing.Clear();
+        _selection.Clear();
+        _focusIcon = null;
+        _previewOpen = false;
+    }
+
     private void LayoutStacks(bool animated)
     {
         int rows = RowsPerColumn();
@@ -1177,9 +1223,9 @@ public partial class MainWindow : Window
 
         // 真实内容扇形：后→中→前三层真图标斜向叠放（前锚左下、后锚右上，mac 堆叠手感），
         // 按成员数决定 mid/back 是否显示（见 UpdatePileVisual）。
-        var iconBack = MakePileLayer(46, 0.72, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0), 3, 0.3);
-        var iconMid = MakePileLayer(53, 0.88, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0, 6, 5, 0), 3, 0.35);
-        var iconFront = MakePileLayer(60, 1.0, HorizontalAlignment.Left, VerticalAlignment.Bottom, new Thickness(0), 4, 0.4);
+        var iconBack = MakePileLayer(46 * S, 0.72, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0), 3 * S, 0.3);
+        var iconMid = MakePileLayer(53 * S, 0.88, HorizontalAlignment.Right, VerticalAlignment.Top, new Thickness(0, 6 * S, 5 * S, 0), 3 * S, 0.35);
+        var iconFront = MakePileLayer(60 * S, 1.0, HorizontalAlignment.Left, VerticalAlignment.Bottom, new Thickness(0), 4 * S, 0.4);
 
         // 收起态扇形组（三层真图标一体隐显/渐变）
         var fanGroup = new Grid();
@@ -1191,6 +1237,7 @@ public partial class MainWindow : Window
         // = "点此收起"按钮。箭头带轻阴影，半透明底上不糊。
         var chevron = new System.Windows.Shapes.Path
         {
+            // 用 LayoutTransform 缩放几何+描边，避开路径迷你语言字符串的小数分隔符本地化坑
             Data = Geometry.Parse("M 0,0 L 11,11 L 22,0"),
             Stroke = new SolidColorBrush(Color.FromArgb(0xF0, 0xFF, 0xFF, 0xFF)),
             StrokeThickness = 3.5,
@@ -1199,14 +1246,15 @@ public partial class MainWindow : Window
             StrokeLineJoin = PenLineJoin.Round,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 5, 0, 0), // V 形视觉重心偏上，微降回正
+            Margin = new Thickness(0, 5 * S, 0, 0), // V 形视觉重心偏上，微降回正
+            LayoutTransform = S == 1.0 ? Transform.Identity : new ScaleTransform(S, S),
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.45 },
         };
         var cardGroup = new Grid { Opacity = 0, IsHitTestVisible = false }; // 初始收起态：只见扇形
         cardGroup.Children.Add(new Border
         {
-            Width = 58, Height = 58,
-            CornerRadius = new CornerRadius(12),
+            Width = 58 * S, Height = 58 * S,
+            CornerRadius = new CornerRadius(12 * S),
             Background = new SolidColorBrush(Color.FromArgb(0x4C, 0xFF, 0xFF, 0xFF)),
             BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)),
             BorderThickness = new Thickness(1),
@@ -1215,14 +1263,14 @@ public partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
         });
 
-        var plate = new Grid { Width = 76, Height = 74, HorizontalAlignment = HorizontalAlignment.Center };
+        var plate = new Grid { Width = 76 * S, Height = 74 * S, HorizontalAlignment = HorizontalAlignment.Center };
         plate.Children.Add(fanGroup);
         plate.Children.Add(cardGroup);
 
         var label = new TextBlock
         {
             Foreground = Brushes.White,
-            FontSize = 12,
+            FontSize = 12 * S,
             FontFamily = LabelFontFamily,
             FontWeight = FontWeights.Bold,
             TextAlignment = TextAlignment.Center,
@@ -1231,8 +1279,8 @@ public partial class MainWindow : Window
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
         {
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(5, 1, 5, 2),
+            CornerRadius = new CornerRadius(6 * S),
+            Padding = new Thickness(5 * S, 1, 5 * S, 2),
             Background = Brushes.Transparent,
             Child = label,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -1331,7 +1379,7 @@ public partial class MainWindow : Window
 
     /// <summary>只在成员路径变化时才重新取图——LayoutStacks 每次重排都会跑到这里，
     /// 裸取图是较贵的 shell COM 往返，缓存路径避免同一张图反复取（尤其三层扇形后 3 倍开销）。</summary>
-    private static void SetLayerIcon(Image img, ref string? cachedPath, string path)
+    private void SetLayerIcon(Image img, ref string? cachedPath, string path)
     {
         if (cachedPath == path) return;
         img.Source = IconLoader.Load(path, IconPx);
@@ -1701,7 +1749,7 @@ public partial class MainWindow : Window
 
         static double L(IconVisual g) => double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root);
         static double T(IconVisual g) => double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root);
-        static double H(IconVisual g) => g.Root.ActualHeight > 0 ? g.Root.ActualHeight : CellH;
+        double H(IconVisual g) => g.Root.ActualHeight > 0 ? g.Root.ActualHeight : CellH;
 
         double minX = group.Min(L), minY = group.Min(T);
         double w = group.Max(g => L(g) + CellW) - minX;
@@ -1945,9 +1993,22 @@ public partial class MainWindow : Window
             ShowIconMenu(_rightPress.Icon, MenuAnchor(up));
             return;
         }
-        PrepareForMenu();
+        var pt = IconCanvas.PointToScreen(MenuAnchor(up)); // 物理像素屏幕坐标
+        PrepareForMenu(); // 前台=桌面链（Progman）：自制菜单要，Explorer 的 TrackPopupMenu 也要稳定环境
         ClearSelection();
-        var pt = IconCanvas.PointToScreen(MenuAnchor(up));
+        // 原生菜单模式（开关开 + 未按 Alt）：把 WM_CONTEXTMENU 转发给父窗口 DefView，让 Explorer
+        // 弹它自己的桌面菜单——用户系统上装的是 Win11 现代菜单还是经典菜单，就出哪个，我们不重建。
+        // Alt+右键 = 强制走我们的自制菜单（含整理/叠放/更换壁纸/设置）。
+        // hook 里的 WM_CONTEXTMENU 无条件吞噬保持不变：菜单的唯一来源要么是这里显式 Post，要么下面自制。
+        if (Config.NativeBackgroundMenu && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            IntPtr lp = (IntPtr)(((int)pt.Y << 16) | ((int)pt.X & 0xFFFF));
+            // 必须先判 DefView 句柄非空：PostMessage(NULL,…) 会投到本线程队列并返回 true，
+            // 那样会早退成"右键无反应"。句柄没就绪或拒收都落回自制菜单。
+            if (DesktopLayer.DefViewHwnd != IntPtr.Zero &&
+                Native.PostMessage(DesktopLayer.DefViewHwnd, (uint)Native.WM_CONTEXTMENU, _hwnd, lp))
+                return;
+        }
         MenuHost.RequestBackgroundMenu((int)pt.X, (int)pt.Y, DesktopItemProvider.UserDesktop, _hwnd);
     }
 
@@ -1983,6 +2044,17 @@ public partial class MainWindow : Window
                 Desktop.RefreshAll();
                 e.Handled = true;
                 break;
+            // Ctrl +/-：按档位调整图标大小（与 Finder 一致；主键区与小键盘的 +/- 都接）。
+            // 主键区 "+" 是 OemPlus 的 Shift 态（US/多数拉丁布局），所以容忍 Shift——否则
+            // 用户按 Ctrl+Shift+= 得到的 Control|Shift 精确不等于 Control 会漏掉（浏览器 Ctrl++ 同款期待）。
+            case Key.OemPlus or Key.Add when (mods & ~ModifierKeys.Shift) == ModifierKeys.Control:
+                Desktop.StepIconSize(+1);
+                e.Handled = true;
+                break;
+            case Key.OemMinus or Key.Subtract when (mods & ~ModifierKeys.Shift) == ModifierKeys.Control:
+                Desktop.StepIconSize(-1);
+                e.Handled = true;
+                break;
             case Key.Enter or Key.F2 when _selection.Count == 1:
                 StartRename(_selection.First());
                 e.Handled = true;
@@ -1995,9 +2067,15 @@ public partial class MainWindow : Window
                 MoveSelection(e.Key);
                 e.Handled = true;
                 break;
+            // 空格预览：有第三方预览器就切换预览；没装则不处理（Handled 不置，落回首字母定位）。
+            // 只认无修饰键的裸空格（Ctrl/Shift/Alt+Space 留给系统/IME，不抢）。
+            case Key.Space when mods == ModifierKeys.None && Config.SpacePreview && FocusPreviewPath is { } previewPath:
+                if (FilePreview.Toggle(previewPath)) { _previewOpen = !_previewOpen; e.Handled = true; }
+                break;
             case Key.Escape:
                 RestoreCutIcons();
                 ClearSelection();
+                _previewOpen = false;
                 e.Handled = true;
                 break;
         }
@@ -2124,7 +2202,12 @@ public partial class MainWindow : Window
             double score = along + perp * 3; // 垂直偏移权重更高
             if (score < bestScore) { bestScore = score; best = iv; }
         }
-        if (best != null) SelectOnly(best);
+        if (best != null)
+        {
+            SelectOnly(best);
+            // 预览开着时让它跟随新焦点（QuickLook/Seer 的 macOS scrub 手感）
+            if (_previewOpen && FocusPreviewPath is { } pv) FilePreview.Switch(pv);
+        }
     }
 
     private Point IconCenter(IconVisual iv)
@@ -2233,10 +2316,10 @@ public partial class MainWindow : Window
         _renameBox = new TextBox
         {
             Text = editText,
-            FontSize = 12,
+            FontSize = 12 * S,
             FontFamily = LabelFontFamily,
-            MinWidth = 60,
-            MaxWidth = CellW + 40,
+            MinWidth = 60 * S,
+            MaxWidth = CellW + 40 * S,
             TextAlignment = TextAlignment.Center,
             Padding = new Thickness(2, 0, 2, 1),
         };

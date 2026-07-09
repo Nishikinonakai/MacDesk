@@ -50,6 +50,18 @@ internal sealed class Settings
     /// <summary>界面语言：auto（跟随系统 UI 语言）| zh | en。重启生效（见 L.cs）。</summary>
     public string Language { get; set; } = "auto";
 
+    /// <summary>选中文件按空格调用第三方预览器（QuickLook/Seer/PowerToys Peek）。默认开——
+    /// 没装任何预览器时空格什么都不做（不影响首字母定位，见 FilePreview）。</summary>
+    public bool SpacePreview { get; set; } = true;
+
+    /// <summary>空白处右键出 Windows 原生桌面菜单（转发 WM_CONTEXTMENU 给 DefView，Explorer
+    /// 弹它自己的现代/经典菜单）；此时按住 Alt 再右键才出 MacDesk 自制菜单。默认关。</summary>
+    public bool NativeBackgroundMenu { get; set; }
+
+    /// <summary>图标尺寸（base 图标 DIU，缩放因子 S = IconSize/64）。档位见 MainWindow.IconSizeSteps，
+    /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
+    public int IconSize { get; set; } = 64;
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -81,6 +93,9 @@ internal sealed class Settings
                     s.StackGroupBy = gb.GetString()!;
                 if (doc.RootElement.TryGetProperty("Language", out var lg) && lg.ValueKind == JsonValueKind.String)
                     s.Language = lg.GetString()!;
+                if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
+                if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
+                if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
             }
         }
         catch { }
@@ -92,7 +107,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
