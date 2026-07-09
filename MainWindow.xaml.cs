@@ -2655,7 +2655,8 @@ public partial class MainWindow : Window
     /// 把一组桌面项重定位到落点。本窗口的图标直接落座；不在本窗口的（跨屏拖拽）
     /// 写归属到本屏后全局刷新，由分发逻辑移交图标。
     /// 自家拖拽（ActiveDrag 有值）：锚点落在"拖拽图像视觉所在位置"（落点减抓取偏移），
-    /// 组成员保持拖起时的相对位置（Finder 语义）；且不播放飞行动画——图像已经把图标带到位了。
+    /// 组成员保持拖起时的相对位置（Finder 语义）。**自由摆放**下不播放飞行动画（图像已把图标
+    /// 带到位、落哪是哪，零漂移）；**网格模式**下落点需吸格，从落点滑行到目标格（Finder 手感）。
     /// </summary>
     private void RepositionAt(string[] paths, Point dropPos)
     {
@@ -2702,7 +2703,8 @@ public partial class MainWindow : Window
             if (iv != null)
             {
                 iv.Canon = canon;
-                MoveIcon(iv, fl, ft, animated: false);
+                // 自由摆放瞬置（零漂移）；网格模式从落点滑行到吸附格（回归被误删的动画）
+                MoveIcon(iv, fl, ft, animated: !Config.FreePlacement);
             }
             else
             {

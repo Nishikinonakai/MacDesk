@@ -1144,3 +1144,50 @@ OnKeyDown 在 `_renameBox!=null` 时早退、滑杆在设置窗故 rename 已提
 预览。两预览器都抢 Space 会多个空 Peek 窗。测毕机主选择卸载 QuickLook（winget uninstall +
 清桌面 QuickLook.lnk）还原原状。Peek 快捷键实为 Ctrl+Space（但裸 Space 也触发，疑 Peek 的
 Explorer-Space 情境激活，属机主 PowerToys 配置）。
+
+## 2026-07-09 II 批次二（机主反馈驱动，真机验证，同批 commit）
+
+四项 + 4K 评估。并行投研（menu/drop/slider 各一 agent）定位后实现，逐一真机验证。
+
+### 滑杆改无极 + 文案
+外观页图标大小滑杆：拖动改为**无极连续**（`ValueFromX` 像素→取整尺寸），仅**默认档一个磁吸点**
+（±8px 吸附到 64）；Ctrl +/- 仍走离散档位阶梯不变。去掉各中间档刻度（只留默认档强调色刻度，
+免误导成离散停靠）。去掉文案里"（与访达一致）"，改"拖动可无级调整…靠近默认时自动吸附"。
+**真机**：拖中段得 87（非档位值=无极实锤），拖近默认吸回 64。
+
+### 小端扩档（4K 傻大）
+用户反馈 4K 下图标傻大。**保真复现**（切 Dell 到 1280×720 = 4K@300% 逻辑分辨率，图标 DIU
+占屏比例完全一致）实测：64=傻大、48 偏大、**40 舒适**（≈正常 DPI 默认观感）、32 紧凑。当前
+最小档 48 对高 DPI 4K 用户不够小 → **档位下探到 32、小端加密**：`IconSizeSteps={32,40,48,64,
+80,96,112,128}`、滑杆值域 48..128→32..128。**真机**：Ctrl+- 64→48→40→32 逐档、32 处钳制。
+（远程 DisplaySwitch/Win+P 都切不动 TV 拓扑——两屏都通电但复制/1080p 态，改拓扑要机主的手；
+分辨率保真复现 icon 占比足以评估 size，仅少了真 4K 面板的物理尺寸/锐度维度。）
+
+### 网格对齐拖放动画回归修复
+`RepositionAt`（MainWindow.xaml.cs:2705）落位 `animated: false` 是 commit 6245e7b（零漂移落位）
+误伤——那次为杀"自由摆放的莫名归位动画"把 `animated` 无条件置 false，连**网格模式需吸格时的
+滑行动画**一起删了。改 `animated: !Config.FreePlacement`：自由摆放瞬置（零漂移，落哪是哪）、
+网格模式从落点滑行到吸附格（回归 Finder 手感）。MoveElement 对非 NaN Canvas.Left 的既有图标
+会动画（拖起原位留影、坐标非 NaN），一行即修。（机主当前自由摆放态看不到此动画，切网格才生效。）
+
+### 🐛 自制菜单图标随机丢失
+根因（并行投研 + 真机确认）：**shell 对 IExplorerCommand 类动词（"在终端打开"等）的图标是
+异步/按需加载**，而 v2 从不真正显示菜单——`MenuSnapshot.Capture` 在 `WM_INITMENUPOPUP`(ForceInit)
+后一瞬即读 hbmpItem、无 settle/pump/重读，某次没 landed 就整项丢图；且 v2 显示的是**重建菜单**，
+shell 后到的图标永远追不上（legacy TrackPopupMenu 路径因菜单实活着无此问题）→ 每次随机丢不同的。
+序列化本身无锅（像素字节数组跨进程、非 HBITMAP 句柄）。修 = 两层：
+- **稳定化**：Capture 每层末尾 `StabilizeIcons`——暖菜单（全有图）零等待；有缺图则泵消息
+  （host STA 期间不泵，异步完成消息到不了 owner 窗口）+ 只重读仍缺图项，连续空转/硬上限收手。
+  按 `Item.Pos`（捕获时真实菜单位置，非 list 索引——GetMenuItemInfoW 失败会跳位入 list 致错位）重读。
+- **粘滞图标缓存**（主力）：host 常驻进程，凡某次捕获到过的图标按文本记住、后续缺图回填——
+  "见过一次就不再丢"。先回填再稳定化再存，收敛随机丢图。
+**真机**：装 QuickLook 无关；连开自制菜单——预热前"Open in Terminal"4 次中 1 次有图（随机），
+预热后连开 3 次哈希完全一致（`f1c352…`）、终端图标稳定出现。Properties/自定义项本就无图属正常。
+
+### 真机侦察沉淀
+- **home-win DHCP 换 IP（.20→.8）**：连不上先 `arp -a`+ping 扫段、逐个敲 18800/ping 找回（记忆已录）。
+- **UIPI**：机主开着的管理员权限窗霸占前台时，普通权限代理无法注入任何合成输入（点击/键/Win+D
+  全丢），须请机主关掉提权窗（记忆已录）。
+- **两屏都通电**（DELL U2419HS + 55'TV SKG5500）但拓扑单屏；远程切拓扑到 TV-only 未成功（DisplaySwitch
+  /external 与 Win+P 键序都无效），改用分辨率保真复现做 4K size 评估。
+- 红线全程守住：多次改档 + 分辨率切换往返，`layout.json` SHA256 逐字节不变（0CF7…D0F）。

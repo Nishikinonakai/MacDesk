@@ -176,8 +176,10 @@ internal static class Desktop
         foreach (var w in Windows) if (w.Attached) w.LayoutAll(animated);
     }
 
-    /// <summary>图标尺寸档（base 图标 DIU）。Ctrl +/- 与外观页滑杆走这套；64=默认。</summary>
-    public static readonly int[] IconSizeSteps = { 48, 64, 80, 96, 112, 128 };
+    /// <summary>图标尺寸档（base 图标 DIU），Ctrl +/- 用；64=默认。小端加密（32/40/48）——
+    /// 4K 高 DPI（如 4K@300% 逻辑 1280×720）下 64 显得傻大，用户需要更小档（实测 40 舒适、
+    /// 32 紧凑），故档位下探到 32、小端更细。滑杆无极可达任意值，此表仅供快捷键逐档。</summary>
+    public static readonly int[] IconSizeSteps = { 32, 40, 48, 64, 80, 96, 112, 128 };
     public const int DefaultIconSize = 64;
 
     /// <summary>Ctrl +/-：按档位增减图标大小（与 Finder 一致）。取当前值最近的档，移动 delta。</summary>

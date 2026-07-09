@@ -295,21 +295,24 @@ internal sealed class SettingsWindow : Window
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
 
-    /// <summary>图标大小滑杆（macOS Dock 设置观感）：轨道 + 白圆钮 + 各档刻度，默认档用强调色
-    /// 加粗刻度明确标注、拖动吸附到档位。跨档时即时 Desktop.SetIconSize 预览（不是每像素刷）。
+    /// <summary>图标大小滑杆（macOS Dock 设置观感）：轨道 + 白圆钮，**无极调节**（拖到任意大小），
+    /// 仅默认档一个强调色刻度作磁吸点；松手才应用一次（拖动中重建会卡）。Ctrl +/- 另走离散档位。
     /// 自绘（本项目控件全代码构，避开 WPF Slider 模板 Track 的 FrameworkElementFactory 坑）。</summary>
     private UIElement IconSizeSlider()
     {
         const double W = 220, D = 18, R = D / 2, RailH = 4, MidY = 12;
-        var steps = Desktop.IconSizeSteps;
         var accent = new SolidColorBrush(Accent.Current);
 
-        double CenterX(int value) => R + (Math.Clamp(value, 48, 128) - 48) / 80.0 * (W - D);
-        int NearestStep(double x)
+        // 滑杆值域 32..128（下探到 32：4K 高 DPI 下 64 傻大，小端要够得着——实测 40 舒适、32 紧凑）
+        double CenterX(int value) => R + (Math.Clamp(value, 32, 128) - 32) / 96.0 * (W - D);
+        const double SnapPx = 8; // 默认档磁吸半径（px）
+        double defaultX = CenterX(Desktop.DefaultIconSize);
+        // 无极：像素→连续整数尺寸；只在靠近默认档时吸附（滑杆上唯一吸附点；Ctrl +/- 另走档位阶梯）
+        int ValueFromX(double x)
         {
+            if (Math.Abs(x - defaultX) <= SnapPx) return Desktop.DefaultIconSize;
             double f = Math.Clamp((x - R) / (W - D), 0, 1);
-            int idx = Math.Clamp((int)Math.Round(f * (steps.Length - 1)), 0, steps.Length - 1);
-            return steps[idx];
+            return (int)Math.Round(32 + f * 96);
         }
 
         var canvas = new Canvas { Width = W, Height = 24 };
@@ -320,20 +323,11 @@ internal sealed class SettingsWindow : Window
         Canvas.SetLeft(fill, 1); Canvas.SetTop(fill, MidY - RailH / 2);
         canvas.Children.Add(fill);
 
-        foreach (var s in steps)
-        {
-            bool dft = s == Desktop.DefaultIconSize;
-            var tick = new Border
-            {
-                Width = dft ? 2 : 1,
-                Height = dft ? 12 : 7,
-                Background = dft ? accent : Subtle,
-                CornerRadius = new CornerRadius(1),
-            };
-            Canvas.SetLeft(tick, CenterX(s) - (dft ? 1 : 0.5));
-            Canvas.SetTop(tick, MidY - (dft ? 6 : 3.5));
-            canvas.Children.Add(tick);
-        }
+        // 无极调节：只画默认档这一个强调色刻度（唯一吸附点）——不再画各档刻度以免误导成离散停靠
+        var dftTick = new Border { Width = 2, Height = 12, Background = accent, CornerRadius = new CornerRadius(1) };
+        Canvas.SetLeft(dftTick, CenterX(Desktop.DefaultIconSize) - 1);
+        Canvas.SetTop(dftTick, MidY - 6);
+        canvas.Children.Add(dftTick);
 
         var thumb = new Border
         {
@@ -354,10 +348,10 @@ internal sealed class SettingsWindow : Window
         }
         Place(Config.IconSize);
 
-        // 拖动时滑钮实时吸附到档位（纯视觉），松手才真正应用一次——SetIconSize 会 teardown+重建
-        // 桌面（含 shell 重取图），每跨档都做会连做 5 次卡顿；松手应用一次既跟手又不抖。
+        // 拖动时滑钮实时跟随（无极，靠近默认磁吸），松手才真正应用一次——SetIconSize 会 teardown+
+        // 重建桌面（含 shell 重取图），拖动中每变一次都做会连做几十次卡顿；松手应用一次既跟手又不抖。
         int pending = Config.IconSize;
-        void Preview(double x) { pending = NearestStep(x); Place(pending); }
+        void Preview(double x) { pending = ValueFromX(x); Place(pending); }
         canvas.MouseLeftButtonDown += (_, e) => { canvas.CaptureMouse(); Preview(e.GetPosition(canvas).X); e.Handled = true; };
         canvas.MouseMove += (_, e) =>
         {
@@ -381,7 +375,7 @@ internal sealed class SettingsWindow : Window
             Canvas.SetLeft(tb, Math.Clamp(centerX - tb.DesiredSize.Width / 2, 0, W - tb.DesiredSize.Width));
             captions.Children.Add(tb);
         }
-        Cap(L.T("小", "Small"), CenterX(48), Subtle, FontWeights.Normal);
+        Cap(L.T("小", "Small"), CenterX(32), Subtle, FontWeights.Normal);
         Cap(L.T("默认", "Default"), CenterX(Desktop.DefaultIconSize), accent, FontWeights.SemiBold);
         Cap(L.T("大", "Large"), CenterX(128), Subtle, FontWeights.Normal);
 
@@ -664,7 +658,7 @@ internal sealed class SettingsWindow : Window
 
         var sizeSec = new StackPanel();
         sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
-            L.T("拖动调整桌面图标大小，吸附到档位；也可按 Ctrl 加 +/- 逐档调整（与访达一致）。", "Drag to size desktop icons (snaps to steps); or press Ctrl with +/- to step (like Finder).")));
+            L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
         p.Children.Add(Card(sizeSec));
 
         var wall = new StackPanel();

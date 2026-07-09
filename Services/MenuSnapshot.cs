@@ -49,6 +49,10 @@ internal static class MenuSnapshot
 
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public List<Item>? Children { get; set; }
+
+        /// <summary>捕获时的菜单位置（仅 host 侧图标稳定化重读用；不序列化）。
+        /// 用它而非 list 索引，因 GetMenuItemInfoW 失败时 Capture 会跳过该位不入 list，索引会错位。</summary>
+        [JsonIgnore] public int Pos { get; set; }
     }
 
     public static string ToJson(List<Item> items) => JsonSerializer.Serialize(items);
@@ -153,6 +157,7 @@ internal static class MenuSnapshot
             var it = new Item
             {
                 Id = mii.wID,
+                Pos = i,
                 Checked = (mii.fState & MFS_CHECKED) != 0,
                 Radio = (mii.fType & MFT_RADIOCHECK) != 0,
                 Disabled = (mii.fState & MFS_DISABLED) != 0,
@@ -186,7 +191,85 @@ internal static class MenuSnapshot
 
             list.Add(it);
         }
+        RestoreIconsFromCache(list);  // 先回填历史见过的图标（缩小稳定化等待面 + 治随机丢的主力）
+        StabilizeIcons(hMenu, list);  // 仍缺的泵消息等异步加载（顺带把新图标喂进缓存）
+        StoreIconsToCache(list);      // 这轮捕到的（含刚等到的）存缓存，供下次回填
         return list;
+    }
+
+    /// <summary>图标粘滞缓存（host 进程常驻）：shell 对 IExplorerCommand 类动词（"在终端打开"等）
+    /// 的图标是异步/按需的，而 v2 从不真正显示菜单 → 某次没 landed 就整项丢图，且每次丢的不一样。
+    /// 凡**某次捕获到过**的图标按显示文本记住，后续缺图即回填——"见过一次就不再丢"，把随机丢图
+    /// 收敛掉。host 单线程串行建菜单，无需加锁；键=文本（同文本同图标，冲突可忽略）。</summary>
+    private static readonly Dictionary<string, (byte[] icon, int w, int h)> _iconCache = new();
+
+    private static void RestoreIconsFromCache(List<Item> list)
+    {
+        foreach (var it in list)
+            if (!it.Sep && !it.OwnerDraw && it.Icon == null && !string.IsNullOrEmpty(it.Text)
+                && _iconCache.TryGetValue(it.Text, out var c))
+            { it.Icon = c.icon; it.IconW = c.w; it.IconH = c.h; }
+    }
+
+    private static void StoreIconsToCache(List<Item> list)
+    {
+        foreach (var it in list)
+            if (!it.Sep && !it.OwnerDraw && it.Icon != null && it.IconW > 0 && !string.IsNullOrEmpty(it.Text))
+                _iconCache[it.Text] = (it.Icon, it.IconW, it.IconH);
+    }
+
+    /// <summary>菜单图标随机丢失的修复。shell 对不少动词的图标是**异步加载**的
+    /// （IExplorerCommand 类如"在终端打开"、ShellNew 的"新建▸"子项等）：单次即时快照会漏掉
+    /// 当刻还没 landed 的图标，而 v2 显示的是重建菜单、shell 后到的图标永远追不上 → 每次随机
+    /// 丢不同的图。这里泵消息（host STA 期间不泵，异步完成消息到不了、hbmpItem 停在 0）给图标
+    /// 留时间、按位置只重读仍缺图的项，直到补齐 / 连续空转（剩下的是本就无图的项）/ 硬上限。
+    /// **暖菜单（全有图）零等待。** list 索引 1:1 对应菜单位置（含分隔符，逐项按序 Add）。</summary>
+    private static void StabilizeIcons(IntPtr hMenu, List<Item> list)
+    {
+        bool AnyMissing()
+        {
+            foreach (var it in list)
+                if (!it.Sep && !it.OwnerDraw && it.Icon == null) return true;
+            return false;
+        }
+        if (!AnyMissing()) return; // 暖菜单：零开销直接返回
+
+        int deadline = Environment.TickCount + 200; // 硬上限（菜单本就有探针延迟，+≤200ms 无感）
+        int idle = 0;
+        while (Environment.TickCount < deadline && idle < 2) // 连续 2 次无新图=剩下的本就无图，收手
+        {
+            PumpFor(30);
+            bool gained = false;
+            for (int i = 0; i < list.Count; i++)
+            {
+                var it = list[i];
+                if (it.Sep || it.OwnerDraw || it.Icon != null) continue;
+                var mii = new MENUITEMINFOW { cbSize = Marshal.SizeOf<MENUITEMINFOW>(), fMask = MIIM_BITMAP };
+                if (GetMenuItemInfoW(hMenu, (uint)it.Pos, true, ref mii) && (long)mii.hbmpItem > 11)
+                {
+                    CopyBitmap(mii.hbmpItem, it); // 失败仍留 Icon==null，下轮再试（对瞬时 GetDIBits 失败天然容错）
+                    if (it.Icon != null) gained = true;
+                }
+            }
+            idle = gained ? 0 : idle + 1;
+            if (!AnyMissing()) break; // 全补齐即走
+        }
+    }
+
+    /// <summary>泵消息 + 睡满 ms：host STA 线程在 ForceInit→Capture 窗口不泵的话，shell 以
+    /// 投递消息形式送达的图标完成到不了 owner 窗口，hbmpItem 永远读回 0。</summary>
+    private static void PumpFor(int ms)
+    {
+        int t0 = Environment.TickCount;
+        do
+        {
+            while (Interop.Native.PeekMessageW(out var m, IntPtr.Zero, 0, 0, Interop.Native.PM_REMOVE))
+            {
+                Interop.Native.TranslateMessage(ref m);
+                Interop.Native.DispatchMessageW(ref m);
+            }
+            System.Threading.Thread.Sleep(10);
+        } while (Environment.TickCount - t0 < ms);
     }
 
     private static string ItemText(IntPtr hMenu, uint pos)
