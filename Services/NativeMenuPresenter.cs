@@ -236,7 +236,7 @@ internal static class NativeMenuPresenter
     // 右键目标是 .exe（或解析到 .exe 的快捷方式）时，自绘"用 Locale Emulator 运行"
     // 直接调 LEProc.exe -run。
 
-    private const uint ID_LE_RUN = 0x7201, ID_NEWFOLDER_SEL = 0x7202;
+    private const uint ID_LE_RUN = 0x7201, ID_NEWFOLDER_SEL = 0x7202, ID_FOLDER_STACK = 0x7203;
     private static string? _leTarget; // Append 时解析（UI/STA 线程），Dispatch 时消费
 
     /// <summary>多选文件菜单追加"用所选项目新建文件夹"（Finder 行为）。</summary>
@@ -246,6 +246,23 @@ internal static class NativeMenuPresenter
         if (real < 2) return;
         items.Add(Sep());
         items.Add(Cmd(ID_NEWFOLDER_SEL, L.T($"用所选项目新建文件夹（{real} 项）", $"New Folder with Selection ({real} Items)")));
+    }
+
+    /// <summary>叠放模式下单选桌面根文件夹 → 追加"以堆叠方式展示"勾选项
+    /// （文件夹堆叠，issue #2：单击原地展开内容，Dock 文件夹堆叠语义）。</summary>
+    public static void AppendFolderStackItem(List<MenuSnapshot.Item> items, string[] paths)
+    {
+        var cfg = MacDesk.Desktop.Config;
+        if (!cfg.UseStacks || paths.Length != 1 || paths[0].StartsWith("::")) return;
+        string p = paths[0];
+        try { if (!Directory.Exists(p)) return; } catch { return; }
+        var parent = Path.GetDirectoryName(p);
+        if (!string.Equals(parent, DesktopItemProvider.UserDesktop, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(parent, DesktopItemProvider.PublicDesktop, StringComparison.OrdinalIgnoreCase))
+            return; // 只认桌面根上的文件夹（展开视图里的子文件夹不再嵌套堆叠）
+        bool on = cfg.StackFolders.Any(f => string.Equals(f, p, StringComparison.OrdinalIgnoreCase));
+        items.Add(Sep());
+        items.Add(Cmd(ID_FOLDER_STACK, L.T("以堆叠方式展示", "Display as Stack"), on));
     }
 
     private static readonly Lazy<string?> LeProcPath = new(() =>
@@ -342,6 +359,12 @@ internal static class NativeMenuPresenter
                 catch (Exception ex) { Log.Write("OpenAs failed: " + ex.Message); }
                 return true;
             case ID_NEWFOLDER_SEL: CommandChannel.Signal("NewFolderWithSelection"); return true;
+            case ID_FOLDER_STACK when paths.Length > 0:
+                // 直达通道：被点的路径就在手里，不走 Signal→选中集反推（多屏下跨窗残留
+                // 选中会让 SelectionWindow 选错窗——旧路径无载荷只能那么干，v2 不必）
+                System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+                    MacDesk.MainWindow.ToggleFolderStackFlag(paths[0]));
+                return true;
             case ID_LE_RUN when _leTarget != null && LeProcPath.Value != null:
                 try
                 {

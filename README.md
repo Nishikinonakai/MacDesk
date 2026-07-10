@@ -70,6 +70,13 @@ the new installer and replaces itself silently, then relaunches.
   members. Clicking a pile flies its members out with a spring animation;
   clicking again gathers them back. Doesn't touch the canonical layout —
   turning Stacks off restores your exact arrangement.
+- **Folder Stacks** — in Stacks mode, right-click a desktop folder and pick
+  **Display as Stack**: the icon gets a chevron badge, and a single click
+  expands the folder's contents in place as real icons (open / drag out /
+  right-click), click again to collapse (macOS Dock folder-stack semantics).
+  Dropping files on the folder still moves them in; dragging an expanded item
+  to empty desktop moves it out. Want custom grouping? Make a folder and flag
+  it — the group IS the folder, so it survives even uninstalling MacDesk.
 - **Layout safety.** A rolling daily backup of the layout file (7 kept) plus
   **Export / Import Layout** in Settings for machine migrations. Imported
   entries whose file doesn't exist on the new machine show as macOS-style

@@ -215,6 +215,7 @@ internal static class MenuHost
                     if (verb == "files")
                     {
                         NativeMenuPresenter.AppendSelectionItems(items, paths);
+                        NativeMenuPresenter.AppendFolderStackItem(items, paths); // 文件夹堆叠开关
                         NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
                     }
                     return NativeMenuPresenter.Track(desktopHwnd, items, x, y);
