@@ -265,6 +265,32 @@ internal static class NativeMenuPresenter
         items.Add(Cmd(ID_FOLDER_STACK, L.T("以堆叠方式展示", "Display as Stack"), on));
     }
 
+    /// <summary>单选文件菜单补"重命名"：QueryContextMenu 不传 CMF_CANRENAME 时 shell
+    /// 直接省略该动词；而就算传了，重命名也是资源管理器**视图**实现的行为、不是可
+    /// InvokeCommand 的菜单动词——无视图宿主里点了也不会有任何反应。所以自己补一项，
+    /// 复用 ID_D_RENAME 分发（Signal RenameSelection → MacDesk 内联重命名框）。
+    /// 位置紧跟 shell 的"删除"（剥 &amp; 后按菜单文本找，保住 Explorer 肌肉记忆位）；
+    /// 文本对不上（第三方魔改/系统语言与应用语言不一致）退化为"属性"之前，再不行尾插。
+    /// 思路来自 @climashscape 的 PR #5，锚点从本地 id 改为文本匹配——原生菜单里只有
+    /// 1..0x6FFF 的 shell id，拿 ID_D_DELETE 找永远落空。</summary>
+    public static void AppendRenameItem(List<MenuSnapshot.Item> items, string[] paths)
+    {
+        if (paths.Length != 1 || paths[0].StartsWith("::")) return;
+        if (items.Any(it => it.Id == ID_D_RENAME)) return; // 降级菜单自带，别重复
+        var rename = Cmd(ID_D_RENAME, L.T("重命名", "Rename"));
+        static bool TextIs(MenuSnapshot.Item it, string zh, string en)
+        {
+            if (it.Sep || it.Children != null) return false;
+            var t = it.Text.Replace("&", "").Trim();
+            return t.Equals(zh, StringComparison.Ordinal) || t.Equals(en, StringComparison.OrdinalIgnoreCase);
+        }
+        int del = items.FindIndex(it => TextIs(it, "删除", "Delete"));
+        if (del >= 0) { items.Insert(del + 1, rename); return; }
+        int props = items.FindIndex(it => TextIs(it, "属性", "Properties"));
+        if (props >= 0) { items.Insert(props, rename); return; }
+        items.Add(rename);
+    }
+
     private static readonly Lazy<string?> LeProcPath = new(() =>
     {
         try
