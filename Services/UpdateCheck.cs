@@ -12,8 +12,23 @@ internal static class UpdateCheck
     private const string Api = "https://api.github.com/repos/Nishikinonakai/MacDesk/releases/latest";
     public const string ReleasesPage = "https://github.com/Nishikinonakai/MacDesk/releases";
 
-    public static string CurrentVersion =>
-        typeof(UpdateCheck).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.0.0";
+    /// <summary>展示/比较用版本。取 InformationalVersion（保留 -beta.N 预发布后缀，剥 +元数据），
+    /// 兜底 AssemblyVersion 数字。beta 构建自报 "1.2.2-beta.1" 而不是 "1.2.2"。</summary>
+    public static string CurrentVersion
+    {
+        get
+        {
+            var info = (typeof(UpdateCheck).Assembly
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .FirstOrDefault() as System.Reflection.AssemblyInformationalVersionAttribute)?.InformationalVersion;
+            if (!string.IsNullOrEmpty(info))
+            {
+                int plus = info.IndexOf('+'); // SDK 会附 +<git sha> 源版本元数据
+                return plus > 0 ? info[..plus] : info;
+            }
+            return typeof(UpdateCheck).Assembly.GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.0.0";
+        }
+    }
 
     /// <summary>返回（是否有新版, 展示文案, 可打开的发布页 url 或 null, 新版 tag 或 null）。
     /// 主通道 = releases/latest 的 HTML 302 重定向（Location 头直接带 tag，github.com
@@ -28,7 +43,11 @@ internal static class UpdateCheck
                 return (false, L.T("无法访问 GitHub（网络问题或接口限流），请稍后再试", "Could not reach GitHub (network issue or rate limit). Try again later."), null, null);
             var latest = ParseVersion(tag);
             var mine = ParseVersion(CurrentVersion);
-            if (latest > mine) return (true, L.T($"发现新版本 {tag}（当前 {CurrentVersion}）", $"New version {tag} available (current {CurrentVersion})"), $"{ReleasesPage}/tag/{tag}", tag);
+            // 数字更新为准；数字持平时"我是预发布、对方是正式版"也算有更新（beta 用户
+            // 不被同数字的正式版搁浅——1.2.2-beta.1 要能升到 1.2.2）
+            bool upgrade = latest > mine
+                || (latest == mine && CurrentVersion.Contains('-') && !tag.Contains('-'));
+            if (upgrade) return (true, L.T($"发现新版本 {tag}（当前 {CurrentVersion}）", $"New version {tag} available (current {CurrentVersion})"), $"{ReleasesPage}/tag/{tag}", tag);
             return (false, L.T($"已是最新版本（{CurrentVersion}）", $"You are up to date ({CurrentVersion})"), null, null);
         }
         catch (Exception ex)

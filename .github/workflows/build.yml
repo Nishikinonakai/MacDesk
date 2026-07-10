@@ -50,3 +50,4 @@ jobs:
             MacDesk-Setup-*.exe
             MacDesk-*.zip
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }} # v1.2.2-beta.1 之类标预发布，不进 releases/latest（一键更新不会推给全体用户）

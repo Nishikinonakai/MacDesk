@@ -77,7 +77,8 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        Services.L.Init(Services.Settings.Load().Language); // 所有进程模式最早解析语言
+        var cfg = Services.Settings.Load();
+        Services.L.Init(cfg.Language); // 所有进程模式最早解析语言
         HideNativeIcons = e.Args.Contains("--hide-native");
         Transparent = e.Args.Contains("--transparent"); // 实验：WPF 分层子窗口大概率不渲染
         NoChildStyle = e.Args.Contains("--no-child");
@@ -91,13 +92,13 @@ public partial class App : Application
             HandoffSeed = Services.Handoff.TryLoadSeed();
         }
         LaunchModeArgs = ExtractModeArgs(e.Args);
-        if (e.Args.Contains("--soft"))
+        if (e.Args.Contains("--soft") || cfg.SoftwareRender) // 设置里的持久开关与 --soft 等效（issue #1 核显合成缺陷的逃生口）
             System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
 
         // 开机自启开关（一次性动作，设置完即退）：可带模式开关，如 --enable-autostart --hide-native
         if (e.Args.Contains("--enable-autostart"))
         {
-            Services.Autostart.Enable(LaunchModeArgs, Services.Settings.Load().FastAutostart);
+            Services.Autostart.Enable(LaunchModeArgs, cfg.FastAutostart);
             Shutdown();
             return;
         }
@@ -189,6 +190,9 @@ public partial class App : Application
         }
 
         Services.Log.Write($"startup args=[{string.Join(" ", e.Args)}]");
+        Services.Log.Write(System.Windows.Media.RenderOptions.ProcessRenderMode == System.Windows.Interop.RenderMode.SoftwareOnly
+            ? "render: software-only (--soft / settings SoftwareRender)"
+            : "render: hardware (default)"); // 双态正向记录：排查渲染类 issue 时先看这行，别拿"没日志"当硬件模式的证据
         AppDomain.CurrentDomain.UnhandledException += (_, ue) =>
             Services.Log.Write($"FATAL: {ue.ExceptionObject}");
         DispatcherUnhandledException += (_, de) =>

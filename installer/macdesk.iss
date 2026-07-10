@@ -13,6 +13,8 @@
 #ifndef SourceDir
   #define SourceDir "..\publish"
 #endif
+; VersionInfoVersion 只收纯数字点分格式——beta tag（1.2.2-beta.1）要剥掉预发布后缀
+#define MyAppVerNum Pos("-", MyAppVersion) > 0 ? Copy(MyAppVersion, 1, Pos("-", MyAppVersion) - 1) : MyAppVersion
 
 [Setup]
 AppId={{7F4C9AB6-612A-4DEB-92B0-E95D3A7F5321}
@@ -35,7 +37,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVerNum}
 CloseApplications=no
 
 [Languages]

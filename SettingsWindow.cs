@@ -533,6 +533,12 @@ internal sealed class SettingsWindow : Window
             Config.SpacePreview = v;
             Config.Save();
         }), L.T("选中文件后按空格，调用已安装的第三方预览器（QuickLook / Seer / PowerToys Peek 0.95+）。\n没装任何预览器时空格无效（不影响首字母定位）。", "With a file selected, press Space to invoke an installed third-party previewer (QuickLook / Seer / PowerToys Peek 0.95+).\nDoes nothing if none is installed (type-ahead selection still works).")));
+        startup.Children.Add(Separator());
+        startup.Children.Add(Row(L.T("软件渲染", "Software Rendering"), Toggle(Config.SoftwareRender, v =>
+        {
+            Config.SoftwareRender = v;
+            Config.Save();
+        }), L.T("壁纸或图标出现彩色噪点、亮部烧白时开启（个别核显驱动的硬件合成缺陷，如 Intel UHD 630）。\n重启 MacDesk 生效。", "Turn on if the wallpaper or icons show colored speckles or blown-out highlights (a hardware-compositing defect in some iGPU drivers, e.g. Intel UHD 630).\nTakes effect after restarting MacDesk.")));
         p.Children.Add(Card(startup));
 
         var layoutSec = new StackPanel();

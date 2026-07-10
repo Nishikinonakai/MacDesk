@@ -25,7 +25,10 @@ internal static class Autostart
 
     public static void Enable(IEnumerable<string> modeArgs, bool fast = false)
     {
-        var args = modeArgs.ToArray();
+        // --soft 不烙进自启：软件渲染的持久真相源是 settings.json 的 SoftwareRender（GUI 开关），
+        // --soft 只是会话级实验开关（会话内的看门狗/交接重启走 LaunchModeArgs 仍保留）。
+        // 否则从 --soft 会话里开自启会把它写死进 Run 键，之后 GUI 关开关"关不掉"。
+        var args = modeArgs.Where(a => a != "--soft").ToArray();
         if (fast && EnableTask(args))
         {
             DeleteRunEntry(); // 双机制并存会双启（单实例互斥体兜得住，但没必要）
