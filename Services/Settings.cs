@@ -67,6 +67,28 @@ internal sealed class Settings
     /// 软件渲染实测干净）。默认关（绝大多数显卡正常，软件渲染白费 CPU）。重启生效。</summary>
     public bool SoftwareRender { get; set; }
 
+    // ── 原生桌面虚拟图标开关（Windows"桌面图标设置"那一组，方向来自 PR #3 @climashscape）──
+    // 首次启动默认跟随原生桌面注册表（HideDesktopIcons\NewStartPanel，1=隐藏；
+    // 系统缺省 = 只显示回收站），之后以本设置为准。改动即时生效（RefreshAll 增删图标）。
+
+    public bool ShowRecycleBin { get; set; } = true;
+    public bool ShowThisPC { get; set; }
+    public bool ShowUserFiles { get; set; }
+    public bool ShowNetwork { get; set; }
+    public bool ShowControlPanel { get; set; }
+
+    /// <summary>原生桌面当前是否显示某虚拟图标（注册表值缺失时按系统缺省）。</summary>
+    private static bool NativeIconShown(string braceGuid, bool defShown)
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel");
+            return key?.GetValue(braceGuid) is int hidden ? hidden == 0 : defShown;
+        }
+        catch { return defShown; }
+    }
+
     private Settings(string file) => _file = file;
 
     public static Settings Load()
@@ -75,6 +97,12 @@ internal sealed class Settings
         Directory.CreateDirectory(dir);
         var file = Path.Combine(dir, "settings.json");
         var s = new Settings(file);
+        // 虚拟图标默认值先跟原生桌面注册表走；settings.json 里有值再覆盖（首启即所见即所得）
+        s.ShowRecycleBin = NativeIconShown("{645FF040-5081-101B-9F08-00AA002F954E}", defShown: true);
+        s.ShowThisPC = NativeIconShown("{20D04FE0-3AEA-1069-A2D8-08002B30309D}", defShown: false);
+        s.ShowUserFiles = NativeIconShown("{59031A47-3F72-44A7-89C5-5595FE6B30EE}", defShown: false);
+        s.ShowNetwork = NativeIconShown("{F02C1A0D-3E12-4590-B168-3C813C6A0D06}", defShown: false);
+        s.ShowControlPanel = NativeIconShown("{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}", defShown: false);
         try
         {
             if (File.Exists(file))
@@ -102,6 +130,11 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
                 if (doc.RootElement.TryGetProperty("SoftwareRender", out var sr)) s.SoftwareRender = sr.GetBoolean();
+                if (doc.RootElement.TryGetProperty("ShowRecycleBin", out var v1)) s.ShowRecycleBin = v1.GetBoolean();
+                if (doc.RootElement.TryGetProperty("ShowThisPC", out var v2)) s.ShowThisPC = v2.GetBoolean();
+                if (doc.RootElement.TryGetProperty("ShowUserFiles", out var v3)) s.ShowUserFiles = v3.GetBoolean();
+                if (doc.RootElement.TryGetProperty("ShowNetwork", out var v4)) s.ShowNetwork = v4.GetBoolean();
+                if (doc.RootElement.TryGetProperty("ShowControlPanel", out var v5)) s.ShowControlPanel = v5.GetBoolean();
             }
         }
         catch { }
@@ -113,7 +146,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

@@ -1870,6 +1870,12 @@ public partial class MainWindow : Window
                 Process.Start(new ProcessStartInfo("explorer.exe") { Arguments = "shell:RecycleBinFolder", UseShellExecute = true });
                 return;
             }
+            if (en.Path.StartsWith("::"))
+            {
+                // 其他虚拟命名空间项（此电脑/网络/控制面板/用户文件）：交给资源管理器解析
+                Process.Start(new ProcessStartInfo("explorer.exe") { Arguments = $"\"{en.Path}\"", UseShellExecute = true });
+                return;
+            }
             Process.Start(new ProcessStartInfo(en.Path) { UseShellExecute = true });
         }
         catch { /* 打不开就算了，别崩 */ }

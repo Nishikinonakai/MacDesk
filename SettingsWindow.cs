@@ -541,6 +541,26 @@ internal sealed class SettingsWindow : Window
         }), L.T("壁纸或图标出现彩色噪点、亮部烧白时开启（个别核显驱动的硬件合成缺陷，如 Intel UHD 630）。\n重启 MacDesk 生效。", "Turn on if the wallpaper or icons show colored speckles or blown-out highlights (a hardware-compositing defect in some iGPU drivers, e.g. Intel UHD 630).\nTakes effect after restarting MacDesk.")));
         p.Children.Add(Card(startup));
 
+        // 桌面图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）
+        var deskIcons = new StackPanel();
+        void IconToggle(string zh, string en, Func<bool> get, Action<bool> set, string? hintZh = null, string? hintEn = null, bool sep = true)
+        {
+            deskIcons.Children.Add(Row(L.T(zh, en), Toggle(get(), v =>
+            {
+                set(v);
+                Config.Save();
+                Desktop.RefreshAll(); // 即时增删图标；布局条目保留，重新开启原位回归
+            }), hintZh == null ? null : L.T(hintZh, hintEn!)));
+            if (sep) deskIcons.Children.Add(Separator());
+        }
+        IconToggle("显示回收站", "Show Recycle Bin", () => Config.ShowRecycleBin, v => Config.ShowRecycleBin = v,
+            "桌面图标开关（对应 Windows\"桌面图标设置\"），首次启动默认跟随原生桌面", "Desktop icon toggles (Windows \"Desktop Icon Settings\" set); first run follows the native desktop");
+        IconToggle("显示此电脑", "Show This PC", () => Config.ShowThisPC, v => Config.ShowThisPC = v);
+        IconToggle("显示用户文件", "Show User's Files", () => Config.ShowUserFiles, v => Config.ShowUserFiles = v);
+        IconToggle("显示网络", "Show Network", () => Config.ShowNetwork, v => Config.ShowNetwork = v);
+        IconToggle("显示控制面板", "Show Control Panel", () => Config.ShowControlPanel, v => Config.ShowControlPanel = v, sep: false);
+        p.Children.Add(Card(deskIcons));
+
         var layoutSec = new StackPanel();
         var importBtn = new Button { Content = L.T("导入…", "Import…"), Padding = new Thickness(14, 4, 14, 4) };
         importBtn.Click += (_, _) =>
