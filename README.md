@@ -77,6 +77,9 @@ the new installer and replaces itself silently, then relaunches.
   Dropping files on the folder still moves them in; dragging an expanded item
   to empty desktop moves it out. Want custom grouping? Make a folder and flag
   it — the group IS the folder, so it survives even uninstalling MacDesk.
+- **Desktop icon toggles** — show or hide This PC, User's Files, Network,
+  Control Panel and the Recycle Bin from Settings; the first run follows your
+  native desktop's current choices.
 - **Layout safety.** A rolling daily backup of the layout file (7 kept) plus
   **Export / Import Layout** in Settings for machine migrations. Imported
   entries whose file doesn't exist on the new machine show as macOS-style
