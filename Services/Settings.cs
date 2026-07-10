@@ -1,9 +1,10 @@
 using System.IO;
 using System.Text.Json;
+using Microsoft.Win32;
 
 namespace MacDesk.Services;
 
-/// <summary>轻量用户设置（%LOCALAPPDATA%\MacDesk\settings.json）。目前只有自由摆放开关。</summary>
+/// <summary>轻量用户设置（%LOCALAPPDATA%\MacDesk\settings.json）。</summary>
 internal sealed class Settings
 {
     private readonly string _file;
@@ -62,6 +63,22 @@ internal sealed class Settings
     /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
     public int IconSize { get; set; } = 64;
 
+    /// <summary>在桌面上显示回收站图标。未保存过设置时跟随原生桌面：原生桌面上回收站可见则默认开，否则关。</summary>
+    public bool ShowRecycleBin { get; set; } = IsRecycleBinVisibleOnNativeDesktop();
+
+    /// <summary>读取原生桌面回收站是否可见（Windows 10+ 注册表）。</summary>
+    private static bool IsRecycleBinVisibleOnNativeDesktop()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel");
+            // 值不存在或为 0 = 可见，值为 1 = 隐藏
+            return key?.GetValue("{645FF040-5081-101B-9F08-00AA002F954E}") is not int v || v == 0;
+        }
+        catch { return true; }
+    }
+
     /// <summary>软件渲染（等效 --soft）：整进程绕开显卡走 WPF 软件光栅化。个别核显驱动在
     /// 硬件合成路径把壁纸镜像亮部烧成彩色噪点（issue #1：Intel UHD 630，升最新驱动无效，
     /// 软件渲染实测干净）。默认关（绝大多数显卡正常，软件渲染白费 CPU）。重启生效。</summary>
@@ -101,6 +118,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
+                if (doc.RootElement.TryGetProperty("ShowRecycleBin", out var srb)) s.ShowRecycleBin = srb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("SoftwareRender", out var sr)) s.SoftwareRender = sr.GetBoolean();
             }
         }
@@ -113,7 +131,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, ShowRecycleBin, SoftwareRender },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

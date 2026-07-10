@@ -36,7 +36,9 @@ internal sealed class DesktopItemProvider : IDisposable
 
     public IReadOnlyList<DesktopEntry> Enumerate()
     {
-        var result = new List<DesktopEntry> { new(RecycleBin, "Recycle Bin") };
+        var result = new List<DesktopEntry>();
+        if (Desktop.Config.ShowRecycleBin)
+            result.Add(new DesktopEntry(RecycleBin, "Recycle Bin"));
         foreach (var dir in new[] { UserDesktop, PublicDesktop })
         {
             if (!Directory.Exists(dir)) continue;

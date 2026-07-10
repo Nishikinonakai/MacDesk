@@ -920,9 +920,12 @@ public partial class MainWindow : Window
         foreach (var iv in _icons.Values)
         {
             iv.Canon = Desktop.EffectiveCanon(Path.GetFileName(iv.Entry.Path));
-            // 自愈：拖拽/剪切之外不允许有半透明残留（曾有捕获被打断导致留影卡死的实例）
-            if (iv.Root.Opacity < 1 && !_dragGhosts.Contains(iv) && !_cutIcons.Contains(iv))
-                iv.Root.Opacity = 1;
+            // 自愈：拖拽/剪切之外不允许有半透明残留或隐藏（曾有捕获被打断导致留影/卡隐藏的实例）
+            if (!_dragGhosts.Contains(iv) && !_cutIcons.Contains(iv))
+            {
+                if (iv.Root.Opacity < 1) iv.Root.Opacity = 1;
+                if (iv.Root.Visibility != Visibility.Visible) iv.Root.Visibility = Visibility.Visible;
+            }
         }
 
         var placed = new HashSet<(int, int)>();
@@ -1660,6 +1663,7 @@ public partial class MainWindow : Window
 
         // 抓取基准一律用按下点（不是过阈值那一刻的光标）：拖拽图像出现时正好覆盖原图标，
         // 落位 = 图像视觉位置，拿起-放回零漂移
+        // 必须在 Visibility 变更前调用 RenderDragImage：VisualBrush 需要可见元素抓取位图
         var (image, hotspot) = RenderDragImage(group, iv.DownPos);
         double ax = double.IsNaN(Canvas.GetLeft(iv.Root)) ? 0 : Canvas.GetLeft(iv.Root);
         double ay = double.IsNaN(Canvas.GetTop(iv.Root)) ? 0 : Canvas.GetTop(iv.Root);
@@ -1672,7 +1676,7 @@ public partial class MainWindow : Window
         double homeX = group.Min(g => double.IsNaN(Canvas.GetLeft(g.Root)) ? 0 : Canvas.GetLeft(g.Root));
         double homeY = group.Min(g => double.IsNaN(Canvas.GetTop(g.Root)) ? 0 : Canvas.GetTop(g.Root));
 
-        foreach (var g in group) { g.Root.Opacity = 0.35; _dragGhosts.Add(g); PokeElement(g.Root, 200); } // 原位留影
+        foreach (var g in group) { g.Root.Visibility = Visibility.Collapsed; _dragGhosts.Add(g); } // 原位隐藏，拖拽图像跟手
         DragDropEffects? result = null;
         try { result = ShellDrag.Start(filePaths, allPaths, image, hotspot); }
         catch (Exception ex) { Log.Write("drag failed: " + ex.Message); }
@@ -1684,12 +1688,12 @@ public partial class MainWindow : Window
         if (result == null)
         {
             // 取消（Esc/右键/无效落点）：拖拽图像从取消点飞回原位（Finder 手感），
-            // 动画落地才恢复原图标透明度（期间 _dragGhosts 豁免自愈）
+            // 动画落地才恢复原图标可见性（期间 _dragGhosts 豁免自愈）
             SpringBack(group, image, hotspot, new Point(homeX, homeY));
         }
         else
         {
-            foreach (var g in group) { g.Root.Opacity = 1; PokeElement(g.Root, 150); }
+            foreach (var g in group) { g.Root.Visibility = Visibility.Visible; PokeElement(g.Root, 150); }
             _dragGhosts.Clear();
         }
         // 后续：拖回自己/兄弟窗口 → OnDesktopDrop 重定位；Move 去外部 → FileSystemWatcher 移除图标
@@ -1727,7 +1731,7 @@ public partial class MainWindow : Window
         void Land()
         {
             IconCanvas.Children.Remove(ghost);
-            foreach (var g in group) { g.Root.Opacity = 1; PokeElement(g.Root, 150); }
+            foreach (var g in group) { g.Root.Visibility = Visibility.Visible; PokeElement(g.Root, 150); }
             _dragGhosts.Clear();
         }
         var dur = TimeSpan.FromMilliseconds(220);
@@ -2703,7 +2707,12 @@ public partial class MainWindow : Window
             if (iv != null)
             {
                 iv.Canon = canon;
-                // 自由摆放瞬置（零漂移）；网格模式从落点滑行到吸附格（回归被误删的动画）
+                if (!Config.FreePlacement && ctx != null)
+                {
+                    // 自家拖拽网格模式：先瞬移到视觉落点，再滑行到吸附格（否则动画从拖拽前旧位置起跑）
+                    MoveIcon(iv, dl, dt, animated: false);
+                }
+                // 自由摆放瞬置（零漂移）；网格模式从落点滑行到吸附格
                 MoveIcon(iv, fl, ft, animated: !Config.FreePlacement);
             }
             else

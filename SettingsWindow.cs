@@ -528,6 +528,13 @@ internal sealed class SettingsWindow : Window
         startup.Children.Add(Row(L.T("语言 / Language", "Language / 语言"), langBox,
             L.T("重启 MacDesk 生效", "Takes effect after restarting MacDesk")));
         startup.Children.Add(Separator());
+        startup.Children.Add(Row(L.T("显示回收站", "Show Recycle Bin"), Toggle(Config.ShowRecycleBin, v =>
+        {
+            Config.ShowRecycleBin = v;
+            Config.Save();
+            Desktop.RefreshAll();
+        }), L.T("在桌面上显示回收站图标", "Show the Recycle Bin icon on the desktop")));
+        startup.Children.Add(Separator());
         startup.Children.Add(Row(L.T("空格预览文件", "Space to Preview"), Toggle(Config.SpacePreview, v =>
         {
             Config.SpacePreview = v;
