@@ -664,12 +664,15 @@ public partial class MainWindow : Window
         }
     }
 
-    private IconVisual CreateIconVisual(DesktopEntry en)
+    private IconVisual CreateIconVisual(DesktopEntry en, bool deferIcon = false)
     {
+        // deferIcon（文件夹堆叠子项专用）：不在 UI 线程同步取图。上百张多 MB 图片的
+        // 冷缩略图提取一张上百 ms，同步会把桌面冻几十秒（120 项真机实测 ~40s）——
+        // 子项先空盘上场，LoadFolderStackIconsAsync 后台逐个拉、渐进回填
         var img = new Image
         {
             Width = 64 * S, Height = 64 * S,
-            Source = IconLoader.Load(en.Path, IconPx),
+            Source = deferIcon ? null : IconLoader.Load(en.Path, IconPx),
             SnapsToDevicePixels = true,
         };
         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
@@ -1709,12 +1712,46 @@ public partial class MainWindow : Window
         Log.Write($"folder stack expand: {path} ({view.Children.Count} shown, +{view.HiddenCount} more)");
         LayoutAll(animated: true);
         ArmFolderStackHitTest(view);
+        LoadFolderStackIconsAsync(view);
         view.RefreshTimer.Start(); // 布防补刷：枚举快照与 watcher 上岗之间落进来的变化补一轮
+    }
+
+    /// <summary>取图标 Image 元素（文件 = 裸 Image，文件夹 = Grid 包装的第一层）。</summary>
+    private static Image? IconImageOf(IconVisual iv) =>
+        iv.IconPlate.Child as Image ?? (iv.IconPlate.Child as Grid)?.Children.OfType<Image>().FirstOrDefault();
+
+    /// <summary>后台顺序补齐子项图标（deferIcon 的下半场）：shell 取图在 MTA 线程照跑，
+    /// 拉到一张回 UI 填一张（渐进出现，Dock 网格同款手感）。视图收起即停。</summary>
+    private void LoadFolderStackIconsAsync(FolderStackView view)
+    {
+        var work = view.Children
+            .Where(c => IconImageOf(c) is { Source: null })
+            .Select(c => (Icon: c, c.Entry.Path)).ToList();
+        if (work.Count == 0) return;
+        int px = IconPx;
+        Task.Run(() =>
+        {
+            foreach (var (civ, path) in work)
+            {
+                if (!ReferenceEquals(_folderStack, view)) return; // 已收起/换台：别白拉
+                var src = IconLoader.Load(path, px);
+                if (src == null) continue;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ReferenceEquals(_folderStack, view)) return;
+                    if (IconImageOf(civ) is { Source: null } im)
+                    {
+                        im.Source = src;
+                        PokeElement(civ.Root, 150); // 换图纯渲染变化，动态模式要自己催帧
+                    }
+                });
+            }
+        });
     }
 
     private void AddFolderStackChild(FolderStackView view, DesktopEntry en, double fromL, double fromT)
     {
-        var civ = CreateIconVisual(en);
+        var civ = CreateIconVisual(en, deferIcon: true);
         civ.StackChild = true;
         civ.Root.Opacity = 0.2;              // LayoutStacks 展开分支渐显到全显
         civ.Root.IsHitTestVisible = false;   // 孵化期禁命中（见 ArmFolderStackHitTest）
@@ -1851,6 +1888,7 @@ public partial class MainWindow : Window
                 UpdateFolderStackTileLabel(view);
                 LayoutAll(animated: true);
                 ArmFolderStackHitTest(view); // 补进来的新子项也走孵化期禁命中（对老成员置 true 幂等）
+                LoadFolderStackIconsAsync(view);
             });
         });
     }
@@ -1866,7 +1904,9 @@ public partial class MainWindow : Window
             Fill = new SolidColorBrush(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF)),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(2 * S, 0, 0, 2 * S),
+            // 视觉配重：箭头质心在右侧的实心箭头上（弯柄纤细无分量），包围盒居中会
+            // 整体偏右下、左上留白刺眼（机主点名）——右/下外边距把它往左上挪回光学中心
+            Margin = new Thickness(0, 0, 6 * S, 3 * S),
             LayoutTransform = S == 1.0 ? Transform.Identity : new ScaleTransform(S, S),
         };
         var ring = new Border
@@ -1972,12 +2012,20 @@ public partial class MainWindow : Window
                 StrokeLineJoin = PenLineJoin.Round,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(0, 2 * S, 0, 0), // V 形视觉重心偏上，微降回正
+                // 居中三段修（机主点名不齐，真机像素质心迭代实测）：①去掉照抄饼堆的
+                // 2S 下沉（小圆里过矫 ~5px）②角标关布局取整（整像素吸附偏 ~1px）
+                // ③残余 ~0.5 DIU 左上系统偏差用平移精确配平——RenderTransform 随角标
+                // 旋转，∨/∧ 两态同时归零（Margin/LayoutTransform 做不到这点）
+                RenderTransform = new TranslateTransform(0.67 * S, 0.67 * S),
                 LayoutTransform = S == 1.0 ? Transform.Identity : new ScaleTransform(S, S),
             };
             var rot = new RotateTransform(0);
             var badge = new Border
             {
+                // 关布局取整：窗口级 UseLayoutRounding 会把箭头的排布矩形吸到整像素，
+                // 在 21S 的小圆里偏出 ~2px 且随 180° 旋转镜像放大（真机像素质心实测）；
+                // 亚像素居中 + 抗锯齿在 5px 笔画上不可感，几何居中在任意 DPI 精确成立
+                UseLayoutRounding = false,
                 Width = 21 * S, Height = 21 * S,
                 CornerRadius = new CornerRadius(10.5 * S),
                 Background = new SolidColorBrush(Color.FromArgb(0x99, 0x1C, 0x1C, 0x1E)),
