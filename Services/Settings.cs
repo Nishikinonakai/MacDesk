@@ -58,6 +58,11 @@ internal sealed class Settings
     /// 弹它自己的现代/经典菜单）；此时按住 Alt 再右键才出 MacDesk 自制菜单。默认关。</summary>
     public bool NativeBackgroundMenu { get; set; }
 
+    /// <summary>文件/图标右键出 Explorer 原生 shell 菜单（完整 IContextMenu，含所有第三方扩展）。
+    /// 与 NativeBackgroundMenu 同理：默认关，开时 Alt+右键回退 MacDesk 自制菜单。
+    /// 注意：第三方 shell 扩展崩溃会带走 host 进程（菜单隔离在此路径不生效）。</summary>
+    public bool NativeFileMenu { get; set; }
+
     /// <summary>图标尺寸（base 图标 DIU，缩放因子 S = IconSize/64）。档位见 MainWindow.IconSizeSteps，
     /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
     public int IconSize { get; set; } = 64;
@@ -100,6 +105,7 @@ internal sealed class Settings
                     s.Language = lg.GetString()!;
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
+                if (doc.RootElement.TryGetProperty("NativeFileMenu", out var nf)) s.NativeFileMenu = nf.GetBoolean();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
                 if (doc.RootElement.TryGetProperty("SoftwareRender", out var sr)) s.SoftwareRender = sr.GetBoolean();
             }
@@ -113,7 +119,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, NativeFileMenu, IconSize, SoftwareRender },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

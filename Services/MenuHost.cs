@@ -453,7 +453,7 @@ internal static class MenuHost
     }
 
     /// <summary>该路径的原生文件菜单是否能安全加载（牺牲进程实测，非 0 退出码/崩溃 = 不安全）。</summary>
-    private static bool ProbeSafe(string path)
+    internal static bool ProbeSafe(string path)
     {
         string key = KindKey(path);
         lock (_probeGate)

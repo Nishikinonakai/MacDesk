@@ -1858,6 +1858,18 @@ public partial class MainWindow : Window
         else
             paths = new[] { iv.Entry.Path };
 
+        // 原生文件菜单模式（开关开 + 未按 Alt）：走 ShellContextMenu.Show 直出 Explorer 完整原生菜单
+        // （含所有第三方扩展的 IContextMenu），与 NativeBackgroundMenu 同理。Alt+右键 = 走自制菜单。
+        // 先探针：有不安全的第三方 shell 扩展（非 mscoree 类）则回退到隔离路径，避免主进程崩溃。
+        if (Config.NativeFileMenu && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
+        {
+            bool safe = paths.Any(p => p.StartsWith("::")) || MenuHost.ProbeSafe(paths[0]);
+            if (safe)
+            {
+                ShellContextMenu.Show(paths, _hwnd, (int)pt.X, (int)pt.Y, _hwnd);
+                return;
+            }
+        }
         MenuHost.RequestFileMenu((int)pt.X, (int)pt.Y, paths, _hwnd);
     }
 

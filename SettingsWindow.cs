@@ -707,18 +707,22 @@ internal sealed class SettingsWindow : Window
             Toggle(Config.NativeBackgroundMenu, v => { Config.NativeBackgroundMenu = v; Config.Save(); }),
             L.T("桌面空白处右键改为弹 Windows 原生桌面菜单", "Right-click empty desktop shows the native Windows desktop menu")));
         nativeSec.Children.Add(Separator());
+        nativeSec.Children.Add(Row(L.T("文件/图标使用 Windows 原生菜单", "Native Windows Menu on Files"),
+            Toggle(Config.NativeFileMenu, v => { Config.NativeFileMenu = v; Config.Save(); }),
+            L.T("文件或图标上右键出 Explorer 完整原生菜单（含所有第三方扩展）。\n注意：第三方 shell 扩展的崩溃会影响 MacDesk——推荐仅在自制菜单缺失你需要的内置项时开启。", "Right-click a file/icon to invoke Explorer's full native menu (with all third-party extensions).\nNote: third-party shell extension crashes may take down MacDesk — use only when the built-in menu lacks items you need.")));
+        nativeSec.Children.Add(Separator());
         nativeSec.Children.Add(new TextBlock
         {
             Text = L.T(
                 "操作逻辑（开启后）：\n" +
                 "• 空白处右键 = Windows 原生菜单（Explorer 弹它自己的现代或经典菜单，取决于你的系统设置——我们不重建，你系统里是哪款就出哪款）。\n" +
                 "• 按住 Alt 再右键 = MacDesk 自制菜单（整理、排序方式、使用叠放、更换壁纸、设置）。\n" +
-                "• 图标上的右键不受影响，始终是原生 shell 菜单。\n" +
+                "• 图标上的右键也不受影响，始终是原生 shell 菜单（如开启了文件原生菜单则是完整 Explorer 菜单，否则是 MacDesk 自制渲染的 shell 菜单）。\n" +
                 "注意：原生菜单里的\"查看\"\"排序方式\"\"显示桌面图标\"等作用于被隐藏的原生图标层，对 MacDesk 的图标不起作用——要排列 MacDesk 图标，用 Alt 菜单里的整理 / 排序方式 / 使用叠放。",
                 "How it works (when on):\n" +
                 "• Right-click empty desktop = the native Windows menu (Explorer shows its own modern or classic menu per your system — we don't rebuild it, you get whichever your system uses).\n" +
                 "• Hold Alt and right-click = the MacDesk menu (Clean Up, Sort By, Use Stacks, Change Wallpaper, Settings).\n" +
-                "• Right-clicking an icon is unaffected and always shows the native shell menu.\n" +
+                "• Right-clicking an icon is also unaffected and always shows the native shell menu (the full Explorer menu when Native File Menu is on, or MacDesk's own shell-menu rendering otherwise).\n" +
                 "Note: the native menu's View / Sort by / Show desktop icons act on the hidden native icon layer and do nothing to MacDesk icons — to arrange MacDesk icons use Clean Up / Sort By / Use Stacks in the Alt menu."),
             FontSize = 11,
             Foreground = Subtle,
