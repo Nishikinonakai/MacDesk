@@ -214,6 +214,7 @@ internal static class MenuHost
                 {
                     if (verb == "files")
                     {
+                        NativeMenuPresenter.AppendRenameItem(items, paths);
                         NativeMenuPresenter.AppendSelectionItems(items, paths);
                         NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
                     }

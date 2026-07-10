@@ -223,8 +223,8 @@ internal static class NativeMenuPresenter
         items.Add(Cmd(ID_D_CUT, L.T("剪切", "Cut")));
         items.Add(Cmd(ID_D_COPY, L.T("复制", "Copy")));
         items.Add(Sep());
-        if (paths.Length == 1) items.Add(Cmd(ID_D_RENAME, L.T("重命名", "Rename")));
         items.Add(Cmd(ID_D_DELETE, L.T("删除", "Delete")));
+        if (paths.Length == 1) { items.Add(Sep()); items.Add(Cmd(ID_D_RENAME, L.T("重命名", "Rename"))); }
         items.Add(Sep());
         items.Add(Cmd(ID_D_PROPS, L.T("属性", "Properties")));
         return items;
@@ -237,7 +237,20 @@ internal static class NativeMenuPresenter
     // 直接调 LEProc.exe -run。
 
     private const uint ID_LE_RUN = 0x7201, ID_NEWFOLDER_SEL = 0x7202;
-    private static string? _leTarget; // Append 时解析（UI/STA 线程），Dispatch 时消费
+    private static string? _leTarget;
+
+    /// <summary>在「删除」后插入「重命名」项（单文件时）。原生 shell 菜单缺少重命名
+    ///（未传 CMF_CANRENAME），MacDesk 自己补充，走 StartRename 内联编辑。
+    /// 已存在重命名项时跳过（降级路径自带，避免重复）。</summary>
+    public static void AppendRenameItem(List<MenuSnapshot.Item> items, string[] paths)
+    {
+        if (paths.Length != 1 || paths[0].StartsWith("::")) return;
+        if (items.Any(it => it.Id == ID_D_RENAME)) return;
+        var delIdx = items.FindIndex(it => it.Id == ID_D_DELETE);
+        if (delIdx < 0) return;
+        items.Insert(delIdx + 1, Cmd(ID_D_RENAME, L.T("重命名", "Rename")));
+        items.Insert(delIdx + 1, Sep());
+    }
 
     /// <summary>多选文件菜单追加"用所选项目新建文件夹"（Finder 行为）。</summary>
     public static void AppendSelectionItems(List<MenuSnapshot.Item> items, string[] paths)
