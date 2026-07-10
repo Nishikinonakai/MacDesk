@@ -168,13 +168,27 @@ internal static class MenuHost
         if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 1500)) return;
         if (HostIsBuilding())
         {
-            // host 正替上一个请求熬第三方扩展冷启动（真机实测可卡 40s~2min+）。这时按"死"
-            // 处理去杀进程只会把暖机清零、下一击从头再卡（2026-07-10 日志实锤连杀两个 host）；
-            // 降级出菜单，让它安静熬完。
-            Log.Write("menu v2: host busy building (ext cold start?), fallback without killing it");
+            // host 正卡在文件夹菜单构建里。2026-07-11 真机取证：这不是慢扩展在暖机，而是
+            // host 启动竞态偶发把 shell（windows.storage）内部工作线程锁死（WCT 实锤进程内
+            // SendMessage 死链，杀外部进程无解，5min+ 永不完成）——"带毒出生"的 host 等不好。
+            // 策略：短期内降级出菜单顶着（万一是有限慢构建）；持续超 90s 判定带毒，处决重拉
+            // （新 host 重掷骰子，通常即恢复）。
+            _buildingSince ??= DateTime.UtcNow;
+            if (DateTime.UtcNow - _buildingSince < TimeSpan.FromSeconds(90))
+            {
+                Log.Write("menu v2: host busy building, fallback menu while it tries to finish");
+                ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+                return;
+            }
+            Log.Write("menu v2: host stuck building >90s (poisoned shell worker), executing it");
+            lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
+            _buildingSince = null;
+            EnsureSpawned();
+            if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000)) return;
             ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
             return;
         }
+        _buildingSince = null;
         bool alive;
         lock (_lock) alive = _host is { HasExited: false };
         if (alive && TryExchangeV2(verb, x, y, desktopHwnd, paths, 4000)) return;
@@ -263,10 +277,13 @@ internal static class MenuHost
 
     // ── 慢构建兜底（第三方扩展冷启动） ─────────────────────────
 
-    /// <summary>构建应答的封顶等待。合法慢构建实测 ≤2s（含按需探针），扩展冷启动卡死 ≥40s，
+    /// <summary>构建应答的封顶等待。合法慢构建实测 ≤2s（含按需探针），带毒 host 卡死 ≥40s~∞，
     /// 两个量级之间取 8s：宁可多等一会也不误降级。</summary>
     private const int BuildWaitMs = 8000;
     private const string BuildingEventName = "MacDesk.MenuHost.Building";
+
+    /// <summary>首次观察到 host 处于构建态的时刻（跨请求跟踪"卡死多久了"，见 RequestCoreV2）。</summary>
+    private static DateTime? _buildingSince;
 
     /// <summary>host 是否正在构建菜单（构建期它挂出命名事件；进程被杀内核对象即消失，无残留误报）。</summary>
     private static bool HostIsBuilding()
