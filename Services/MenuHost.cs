@@ -23,6 +23,11 @@ namespace MacDesk.Services;
 /// 旧路径（settings 关掉 v2 时）：host 内 TrackPopupMenu + settle-wait + 瞬灭重试，
 /// 协议同旧版（管道 MacDesk.MenuHost，每请求一次连接，US 分隔，无应答）。
 /// 切换需重启 MacDesk（host 按启动时的设置选一种循环）。
+///
+/// 菜单数据树缓存：同类文件菜单结构完全相同（同一扩展名），v2 路径下每种文件的
+/// 首次右键会构建+捕获+序列化（~142ms/种），缓存后后续右键直接从缓存返回 JSON，
+/// 跳过 shell COM 调用和全量捕获（~20ms，仅 Pipe 往返 + 反序列化）。
+/// 启动预热线程也利用此缓存机制预填桌面所有文件类型的菜单。
 /// </summary>
 internal static class MenuHost
 {
@@ -35,6 +40,21 @@ internal static class MenuHost
         public string Kind { get; set; } = "";
         public List<MenuSnapshot.Item>? Items { get; set; }
     }
+
+    // ── 菜单数据树缓存（按文件类型/背景，host 进程常驻） ─────────
+    // 同类文件菜单结构完全一样：QueryContextMenu + Capture + 序列化 ~142ms 每次右键都跑。
+    // 缓存后第二次起：直接从缓存返回 JSON，跳过 shell COM 调用和全量捕获。
+    // 缓存内容不含 HMENU（Capture 后已释放），只保留 IContextMenu 对象供 InvokeCommand 用。
+    // 背景菜单预热一次，文件菜单按扩展名首次构建后缓存。
+
+    private sealed class CachedMenu
+    {
+        public byte[] Json = null!;
+        public object MenuObj = null!; // IContextMenu 存活供 InvokeCommand
+    }
+
+    private static readonly Dictionary<string, CachedMenu> _menuCache = new();
+    private static readonly object _cacheLock = new();
 
     // ── 帧 IO（v2 双工协议） ──────────────────────────────────
 
@@ -324,7 +344,9 @@ internal static class MenuHost
         // 客户端误判 host 死了把它杀掉重拉——旧版右键时灵时不灵的帮凶之一）。
         // 内容：①背景菜单扩展在本进程加载（实测安全）；②对桌面上所有文件类型跑一遍
         // 牺牲进程探针（文件项扩展会 fail-fast 带走进程，不能在本进程试），
-        // 之后任何图标的首次右键都不用再付探针延迟。
+        // 之后任何图标的首次右键都不用再付探针延迟；
+        // ③对每种安全类型跑一次 BuildCached 预热菜单数据树缓存，
+        // 用户首次右键每种文件同样不用再付构建延迟。
         var warm = new Thread(() =>
         {
             try
@@ -340,6 +362,22 @@ internal static class MenuHost
                 Log.Write("menu host probes done");
             }
             catch (Exception ex) { Log.Write("menu host probe sweep failed: " + ex.Message); }
+            // ③ 菜单数据树预热：对每类安全文件构建一次菜单并缓存
+            try
+            {
+                int cached = 0;
+                foreach (var entry in Directory.EnumerateFileSystemEntries(DesktopItemProvider.UserDesktop))
+                {
+                    string key = MenuCacheKey("files2", new[] { entry });
+                    lock (_cacheLock)
+                        if (_menuCache.ContainsKey(key)) continue;
+                    // 只对 ProbeSafe 判定为安全的类型预热（不安全类型走降级菜单，无需缓存）
+                    if (!ProbeSafe(entry)) continue;
+                    if (BuildCached("files2", new[] { entry }) != null) cached++;
+                }
+                Log.Write($"menu host: pre-cached {cached} file types");
+            }
+            catch (Exception ex) { Log.Write("menu host cache prewarm failed: " + ex.Message); }
         }) { IsBackground = true };
         warm.SetApartmentState(ApartmentState.STA);
         warm.Start();
@@ -377,19 +415,15 @@ internal static class MenuHost
                     continue;
                 }
 
-                var sw = Stopwatch.StartNew();
-                using var built = parts[0] == "bg2"
-                    ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
-                    : ShellContextMenu.BuildFileMenu(paths, _ownerHwnd);
-                if (built == null)
+                // 查菜单缓存：命中直接返回 JSON（跳过 QueryContextMenu + Capture + 序列化）
+                var cached = BuildCached(parts[0], paths);
+                if (cached == null)
                 {
                     WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "error" }));
                     continue;
                 }
-                MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0); // 根菜单的 WM_INITMENUPOPUP
-                var items = MenuSnapshot.Capture(built.HMenu, built.MenuObj);
-                WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items }));
-                Log.Write($"menu host v2: captured {items.Count} top-level items in {sw.ElapsedMilliseconds}ms");
+                WriteFrame(server, cached.Json);
+                var sw = Stopwatch.StartNew(); // 只计日志
 
                 // 菜单在主进程开着期间保持 IContextMenu 存活；用户关菜单后收命令帧。
                 // 泵等待：上一个属性页/异步动词的编组回调不因本次等待而停摆
@@ -397,9 +431,10 @@ internal static class MenuHost
                 int cmd = cmdBytes is { Length: 4 } ? BinaryPrimitives.ReadInt32LittleEndian(cmdBytes) : 0;
                 if (cmd is > 0 and <= 0x6FFF)
                 {
-                    ShellContextMenu.InvokeShellCmd(built.MenuObj, cmd - 1, _ownerHwnd);
+                    ShellContextMenu.InvokeShellCmd(cached.MenuObj, cmd - 1, _ownerHwnd);
                     Log.Write($"menu host v2: invoked shell cmd {cmd}");
                 }
+                Log.Write($"menu host v2: {parts[0]} request done ({sw.ElapsedMilliseconds}ms)");
             }
             catch (Exception ex) { Log.Write("menu host v2 loop error: " + ex.Message); }
         }
@@ -450,6 +485,36 @@ internal static class MenuHost
         try { if (Directory.Exists(path)) return "<dir>"; } catch { }
         var ext = Path.GetExtension(path).ToLowerInvariant();
         return ext.Length == 0 ? "<none>" : ext;
+    }
+
+    /// <summary>按路径取菜单缓存键：背景菜单恒 &lt;bg&gt;，文件菜单按扩展名（多选同属一父目录时取首个）。</summary>
+    private static string MenuCacheKey(string verb, string[] paths) =>
+        verb == "bg2" ? "<bg>" : "<file>:" + KindKey(paths[0]);
+
+    /// <summary>构建菜单 &amp; 缓存：查缓存命中直接返回已序列化的 JSON；未命中则构建→捕获→序列化→入库。</summary>
+    private static CachedMenu? BuildCached(string verb, string[] paths)
+    {
+        string key = MenuCacheKey(verb, paths);
+        lock (_cacheLock)
+            if (_menuCache.TryGetValue(key, out var cached))
+                return cached;
+
+        // 未命中：全量构建（同旧路径的 BuildFileMenu/BuildBackgroundMenu 逻辑）
+        using var built = verb == "bg2"
+            ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
+            : ShellContextMenu.BuildFileMenu(paths, _ownerHwnd);
+        if (built == null) return null;
+        MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0);
+        var items = MenuSnapshot.Capture(built.HMenu, built.MenuObj);
+        var json = JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items });
+
+        // 只有构建的 IContextMenu 活得够久才能 InvokeCommand：把 built.Dispose 的
+        // 生命周期改为由 CachedMenu 持有（IContextMenu 对象），built 的原生资源照常释放。
+        // 注：DestroyMenu 销毁的是 HMENU（Capture 后不再需要），IContextMenu 是 COM 对象仍存活。
+        var cm = new CachedMenu { Json = json, MenuObj = built.MenuObj };
+        lock (_cacheLock) { _menuCache[key] = cm; }
+        Log.Write($"menu cache: built+stored [{key}] ({items.Count} items)");
+        return cm;
     }
 
     /// <summary>该路径的原生文件菜单是否能安全加载（牺牲进程实测，非 0 退出码/崩溃 = 不安全）。</summary>
