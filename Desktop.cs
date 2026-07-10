@@ -141,6 +141,20 @@ internal static class Desktop
     public static void RefreshAll()
     {
         var all = Provider.Enumerate();
+        // 文件夹堆叠标记剪枝：目标文件夹没了（删除/外部改名）标记随之失效，settings.json 别积尸；
+        // 顺带只认桌面根上的文件夹——手改配置塞进来的任意路径（如桌面根自身）会搅乱拖拽语义。
+        // 外部改名丢标记是接受的取舍（watcher 的 Renamed 被折叠成无参 Changed，分不清改名与删+建）。
+        if (Config.StackFolders.Count > 0)
+        {
+            static bool OnDesktopRoot(string p)
+            {
+                var d = System.IO.Path.GetDirectoryName(p);
+                return string.Equals(d, DesktopItemProvider.UserDesktop, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(d, DesktopItemProvider.PublicDesktop, StringComparison.OrdinalIgnoreCase);
+            }
+            if (Config.StackFolders.RemoveAll(p => !System.IO.Directory.Exists(p) || !OnDesktopRoot(p)) > 0)
+                Config.Save();
+        }
         var present = new HashSet<string>(
             all.Select(en => System.IO.Path.GetFileName(en.Path)), StringComparer.OrdinalIgnoreCase);
         var returned = Layout.MissingListed.Where(present.Contains).ToList();

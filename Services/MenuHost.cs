@@ -216,6 +216,7 @@ internal static class MenuHost
                     {
                         NativeMenuPresenter.AppendRenameItem(items, paths); // shell 菜单没有重命名（见方法注释）
                         NativeMenuPresenter.AppendSelectionItems(items, paths);
+                        NativeMenuPresenter.AppendFolderStackItem(items, paths); // 文件夹堆叠开关
                         NativeMenuPresenter.AppendLeRunItem(items, paths); // STA 内解析 .lnk
                     }
                     return NativeMenuPresenter.Track(desktopHwnd, items, x, y);

@@ -114,6 +114,12 @@ public partial class MainWindow : Window
         // 拖拽状态
         public bool MouseDown, Dragging;
         public Point DownPos; // 相对 canvas
+        // 文件夹堆叠（见 "── 文件夹堆叠 ──" 区）
+        public bool IsDir;                   // 建档快照：分类与图标包装恒一致（junction 目标死了
+                                             // 也不跳去饼堆——否则 scrub 强转 Grid 会崩）
+        public bool StackChild;              // 展开的文件夹堆叠里的临时子项：不进 _icons、不碰 Canon/布局档
+        public Border? StackBadge;           // 堆叠文件夹角标（挂在 IconPlate 的 Grid 包装里）
+        public RotateTransform? StackChevronRot; // 角标箭头：展开时翻转朝上
     }
 
     internal MainWindow(MonitorInfo monitor, bool isPrimary)
@@ -216,6 +222,7 @@ public partial class MainWindow : Window
         CommandChannel.Listen("RenameSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.RenameFirstSelected()));
         CommandChannel.Listen("PropertiesSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.ShowSelectionProperties()));
         CommandChannel.Listen("NewFolderWithSelection", () => Dispatcher.BeginInvoke(() => SelectionWindow()?.CreateFolderWithSelection()));
+        CommandChannel.Listen("ToggleFolderStack", () => Dispatcher.BeginInvoke(ToggleFolderStackFromSelection));
     }
 
     /// <summary>当前持有选中项的窗口（菜单动词的作用对象；右键弹菜单前必然已设选中）。</summary>
@@ -657,22 +664,36 @@ public partial class MainWindow : Window
         }
     }
 
-    private IconVisual CreateIconVisual(DesktopEntry en)
+    private IconVisual CreateIconVisual(DesktopEntry en, bool deferIcon = false)
     {
+        // deferIcon（文件夹堆叠子项专用）：不在 UI 线程同步取图。上百张多 MB 图片的
+        // 冷缩略图提取一张上百 ms，同步会把桌面冻几十秒（120 项真机实测 ~40s）——
+        // 子项先空盘上场，LoadFolderStackIconsAsync 后台逐个拉、渐进回填
         var img = new Image
         {
             Width = 64 * S, Height = 64 * S,
-            Source = IconLoader.Load(en.Path, IconPx),
+            Source = deferIcon ? null : IconLoader.Load(en.Path, IconPx),
             SnapsToDevicePixels = true,
         };
         RenderOptions.SetBitmapScalingMode(img, BitmapScalingMode.HighQuality);
+
+        // 文件夹包一层 Grid 当堆叠角标挂点。文件保持裸 Image：饼堆 scrub 读
+        // IconPlate.Child 为 Image（堆成员只会是文件——分类用建档快照 IsDir，与包装决策恒一致）
+        bool isDir = !en.Path.StartsWith("::") && Directory.Exists(en.Path);
+        FrameworkElement iconContent = img;
+        if (isDir)
+        {
+            var wrap = new Grid();
+            wrap.Children.Add(img);
+            iconContent = wrap;
+        }
 
         var iconPlate = new Border
         {
             CornerRadius = new CornerRadius(8 * S),
             Padding = new Thickness(6 * S),
             Background = Brushes.Transparent,
-            Child = img,
+            Child = iconContent,
             HorizontalAlignment = HorizontalAlignment.Center,
         };
 
@@ -719,7 +740,7 @@ public partial class MainWindow : Window
         if (labelText != en.DisplayName)
             root.ToolTip = new ToolTip { Content = en.DisplayName };
 
-        var iv = new IconVisual { Entry = en, Root = root, IconPlate = iconPlate, LabelPlate = labelPlate, Label = label };
+        var iv = new IconVisual { Entry = en, Root = root, IconPlate = iconPlate, LabelPlate = labelPlate, Label = label, IsDir = isDir };
         ApplyCacheMode(root); // 镜像=Root 挂 BitmapCache（治渐隐 alpha 打洞背板）；动态=按设置摘 Effect
         root.MouseLeftButtonDown += (s, e) => OnIconMouseDown(iv, e);
         root.MouseMove += (s, e) => OnIconMouseMove(iv, e);
@@ -914,7 +935,7 @@ public partial class MainWindow : Window
 
         // 使用叠放（macOS Use Stacks）：独立的自动整理模式，不碰规范布局，关闭即恢复
         if (Config.UseStacks) { LayoutStacks(animated); return; }
-        if (_stackPiles.Count > 0) ClearStacks();
+        if (_stackPiles.Count > 0 || _folderStack != null || _hasStackBadges) ClearStacks();
 
         // 规范布局是唯一事实来源：重排前全员取有效 Canon（含归属离场显示器的孤儿——推导显示、不回写）
         foreach (var iv in _icons.Values)
@@ -1068,6 +1089,14 @@ public partial class MainWindow : Window
         foreach (var p in _stackPiles.Values) IconCanvas.Children.Remove(p.Root);
         _stackPiles.Clear();
         _expandedStack = null;
+        _folderStackPending = null;
+        if (_folderStack != null) CollapseFolderStack(_folderStack, animated: false);
+        if (_hasStackBadges)
+        {
+            foreach (var iv in _icons.Values)
+                if (iv.StackBadge != null) UpdateStackBadge(iv, show: false, expanded: false);
+            _hasStackBadges = false;
+        }
         foreach (var iv in _icons.Values) iv.Root.Visibility = Visibility.Visible;
     }
 
@@ -1096,16 +1125,37 @@ public partial class MainWindow : Window
             return pos;
         }
 
-        static bool IsSingle(IconVisual i) => i.Entry.Path.StartsWith("::") || Directory.Exists(i.Entry.Path);
+        // 用建档快照 IsDir 而非现场 Directory.Exists：外部删除/断链的文件夹在 RefreshItems
+        // 清走前保持单摆（不跳饼堆），与图标的 Grid 包装决策恒一致（scrub 强转安全的根基）
+        static bool IsSingle(IconVisual i) => i.Entry.Path.StartsWith("::") || i.IsDir;
         var virt = _icons.Values.Where(i => i.Entry.Path.StartsWith("::"));
         var dirs = _icons.Values.Where(i => !i.Entry.Path.StartsWith("::") && IsSingle(i))
             .OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase);
+
+        // 文件夹堆叠视图的世界一致性：文件夹没了（删除/改名/移交别屏）、标记被摘、
+        // 或展开键已换人（点开别的堆）→ 收起销毁，绝不留幽灵子项
+        if (_folderStack is { } fsCheck)
+        {
+            bool valid = _expandedStack == DirKey(fsCheck.FolderPath)
+                && IsStackFolder(fsCheck.FolderPath)
+                && _icons.Values.Any(i => PathEq(i.Entry.Path, fsCheck.FolderPath));
+            if (!valid)
+            {
+                if (_expandedStack == DirKey(fsCheck.FolderPath)) _expandedStack = null; // 文件夹/标记没了：展开态作废
+                CollapseFolderStack(fsCheck, animated);
+            }
+        }
 
         foreach (var iv in virt.Concat(dirs))
         {
             iv.Root.Visibility = Visibility.Visible;
             var (l, t) = Take();
             MoveIcon(iv, l, t, animated);
+            bool flagged = !iv.Entry.Path.StartsWith("::") && IsStackFolder(iv.Entry.Path);
+            bool dirExpanded = flagged && _folderStack is { } fs && PathEq(fs.FolderPath, iv.Entry.Path);
+            UpdateStackBadge(iv, flagged, dirExpanded);
+            // 展开的文件夹堆叠：子项紧跟文件夹本体列流铺开（后续文件夹/堆自动被挤走，与饼堆展开同轨）
+            if (dirExpanded) LayoutFolderStackChildren(_folderStack!, Take, animated);
         }
 
         var (classify, order) = StackGrouping();
@@ -1114,7 +1164,9 @@ public partial class MainWindow : Window
             .ToDictionary(g => g.Key,
                 g => g.OrderBy(i => i.Entry.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList());
         var kindOrder = order.Where(groups.ContainsKey).ToList();
-        if (_expandedStack != null && !kindOrder.Contains(_expandedStack)) _expandedStack = null; // 展开中的堆消失（清空/改型）
+        // 展开中的堆消失（清空/改型）→ 清展开态；"dir:" 键是文件夹堆叠的，由上方一致性检查负责
+        if (_expandedStack != null && !_expandedStack.StartsWith(DirKeyPrefix, StringComparison.Ordinal)
+            && !kindOrder.Contains(_expandedStack)) _expandedStack = null;
 
         // 收起动画的"飞回堆位"批次：动画播完才 Collapsed。定时器触发时按"那一刻"的分组/展开
         // 状态重新核实——期间被再点开/换分组就跳过隐藏，不需要显式取消定时器，天然免疫重入。
@@ -1323,8 +1375,10 @@ public partial class MainWindow : Window
             if (pv.Expanded || pv.Members.Count < 2) return;
             int cur = pv.ScrubIndex == -1 ? 0 : pv.ScrubIndex;
             int idx = ((cur + (e.Delta < 0 ? 1 : -1)) % pv.Members.Count + pv.Members.Count) % pv.Members.Count;
+            // 防御读：堆成员按 IsDir 快照恒为文件（裸 Image），万一不变式被破也只跳过这帧别崩
+            if (pv.Members[idx].IconPlate.Child is not Image frontImg) return;
             pv.ScrubIndex = idx;
-            pv.IconFront.Source = ((Image)pv.Members[idx].IconPlate.Child).Source;
+            pv.IconFront.Source = frontImg.Source;
             PokeElement(root, 150); // 换图是纯渲染变化，LayoutUpdated 兜不住
         };
         root.MouseLeave += (_, _) =>
@@ -1445,6 +1499,556 @@ public partial class MainWindow : Window
         Config.StackGroupBy = mode;
         Config.Save();
         Desktop.LayoutAllWindows(animated: true);
+    }
+
+    // ── 文件夹堆叠（issue #2："以堆叠方式展示"，macOS Dock 文件夹堆叠语义移植到桌面） ──
+    // 桌面文件夹可经右键标记：图标带向下角标，叠放模式下单击原地展开内容为真实图标
+    // （可开/可拖出/可右键），再点收起；拖文件到文件夹图标上仍是移入。子项是**临时视觉**，
+    // 铁律：绝不进 _icons、绝不碰 Canon/布局档——布局档以文件名为键，同名子项会污染桌面
+    // 条目；RefreshItems 的存活差集也会把外来键连根清掉。分组的真相源是文件系统本身。
+
+    private sealed class FolderStackView
+    {
+        public required string FolderPath;
+        public readonly List<IconVisual> Children = new();
+        public Border? Tile;                 // 尾块：打开文件夹 / 还有 N 项（Dock 网格同款）
+        public TextBlock? TileLabel;
+        public int HiddenCount;              // 容量截断掉的数量
+        public FileSystemWatcher? Watcher;   // 仅展开期间在岗：文件夹内部增删改名 → 刷新
+        public DispatcherTimer? RefreshTimer;
+    }
+
+    private FolderStackView? _folderStack;   // 每窗口同时最多一个（共用 _expandedStack 单值约束）
+    private string? _folderStackPending;     // 展开请求在途（枚举在后台跑）
+    private bool _hasStackBadges;            // 有角标挂着：离开叠放模式时 ClearStacks 摘除
+
+    private const string DirKeyPrefix = "dir:"; // 文件夹堆叠在 _expandedStack 里的键前缀
+    private static string DirKey(string path) => DirKeyPrefix + path;
+
+    private static bool PathEq(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsStackFolder(string path) => Config.StackFolders.Any(f => PathEq(f, path));
+
+    /// <summary>本图标是否按"文件夹堆叠"响应单击（叠放开 + 标记过的桌面文件夹本体）。</summary>
+    private static bool IsStackFolderIcon(IconVisual iv) =>
+        Config.UseStacks && !iv.StackChild && !iv.Entry.Path.StartsWith("::")
+        && IsStackFolder(iv.Entry.Path) && Directory.Exists(iv.Entry.Path);
+
+    /// <summary>按路径切换文件夹堆叠标记（v2 菜单的直达通道：DispatchLocal 手里有被点的
+    /// 路径，绕开"哪个窗口有选中"的多屏歧义——跨窗口残留选中会让 SelectionWindow 选错窗）。
+    /// 取消标记时若正展开，LayoutStacks 的一致性检查自会收起并摘角标。</summary>
+    internal static void ToggleFolderStackFlag(string path)
+    {
+        if (path.StartsWith("::") || !IsOnDesktop(path) || !Directory.Exists(path)) return;
+        int removed = Config.StackFolders.RemoveAll(f => PathEq(f, path));
+        if (removed == 0) Config.StackFolders.Add(path);
+        Config.Save();
+        Log.Write($"folder stack {(removed == 0 ? "on" : "off")}: {path}");
+        Desktop.LayoutAllWindows(animated: true);
+    }
+
+    /// <summary>旧菜单路径（host 进程 Signal 不带载荷）的兜底：从各窗选中集找目标。
+    /// 跨窗残留选中/跨根多选都可能凑出多个候选——只在恰好一个时动手，宁可不做不做错。</summary>
+    private static void ToggleFolderStackFromSelection()
+    {
+        var eligible = Desktop.Windows.SelectMany(w => w._selection)
+            .Where(iv => !iv.StackChild && !iv.Entry.Path.StartsWith("::")
+                && IsOnDesktop(iv.Entry.Path) && Directory.Exists(iv.Entry.Path))
+            .Select(iv => iv.Entry.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (eligible.Count != 1)
+        {
+            Log.Write($"folder stack toggle skipped: {eligible.Count} eligible folder(s) in selection");
+            return;
+        }
+        ToggleFolderStackFlag(eligible[0]);
+    }
+
+    /// <summary>组内已含祖先目录的后代路径剔除（文件夹 + 它展开的子项混拖场景）。</summary>
+    private static string[] PruneDescendantPaths(string[] paths) =>
+        paths.Length < 2 ? paths
+        : paths.Where(p => !paths.Any(q => !ReferenceEquals(q, p)
+            && p.Length > q.Length + 1
+            && p.StartsWith(q, StringComparison.OrdinalIgnoreCase)
+            && (p[q.Length] == '\\' || p[q.Length] == '/'))).ToArray();
+
+    /// <summary>落点是否在展开的文件夹堆叠自己的足迹（子项/尾块格）内——微拖落回原区算取消。</summary>
+    private bool IsOverFolderStackArea(Point pos)
+    {
+        if (_folderStack is not { } v) return false;
+        var els = v.Children.Select(c => (FrameworkElement)c.Root).ToList();
+        if (v.Tile != null) els.Add(v.Tile);
+        foreach (var el in els)
+        {
+            double l = Canvas.GetLeft(el), t = Canvas.GetTop(el);
+            if (double.IsNaN(l) || double.IsNaN(t)) continue;
+            double hgt = el.ActualHeight > 0 ? el.ActualHeight : CellH;
+            if (pos.X >= l && pos.X < l + CellW && pos.Y >= t && pos.Y < t + hgt) return true;
+        }
+        return false;
+    }
+
+    /// <summary>标记文件夹的单击开关：展开着→收起；请求在途→取消；否则发起展开。</summary>
+    private void ToggleFolderStackExpand(string path)
+    {
+        if (PathEq(_folderStackPending, path)) { _folderStackPending = null; return; } // 在途再点 = 取消
+        if (_expandedStack == DirKey(path)) { _expandedStack = null; LayoutAll(animated: true); return; }
+        BeginExpandFolderStack(path);
+    }
+
+    /// <summary>发起展开：后台枚举（本地文件夹毫秒级；网络重定向/云占位卡住也不冻 UI，
+    /// 拿不到就当空文件夹），回 UI 线程呈现。</summary>
+    private void BeginExpandFolderStack(string path)
+    {
+        _folderStackPending = path;
+        Task.Run(() =>
+        {
+            var entries = EnumerateFolderEntries(path);
+            Dispatcher.BeginInvoke(() => PresentFolderStack(path, entries));
+        });
+    }
+
+    /// <summary>文件夹一层内容，过滤口径与桌面枚举一致（隐藏项/desktop.ini 不出镜，快捷方式
+    /// 去扩展名显示）。只走一层不递归——junction/symlink 环免疫。</summary>
+    private static List<DesktopEntry> EnumerateFolderEntries(string path)
+    {
+        var result = new List<DesktopEntry>();
+        try
+        {
+            foreach (var p in Directory.EnumerateFileSystemEntries(path))
+            {
+                var name = Path.GetFileName(p);
+                if (name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)) continue;
+                try { if (File.GetAttributes(p).HasFlag(FileAttributes.Hidden)) continue; }
+                catch { continue; }
+                var display = name;
+                var ext = Path.GetExtension(name).ToLowerInvariant();
+                if (ext is ".lnk" or ".url") display = Path.GetFileNameWithoutExtension(name);
+                result.Add(new DesktopEntry(p, display));
+            }
+        }
+        catch (Exception ex) { Log.Write($"folder stack enumerate failed: {path}: {ex.Message}"); }
+        return result;
+    }
+
+    /// <summary>展开的文件夹还能吃下几格：总格数 − 单摆项（虚拟+文件夹）− 堆数 − 尾块 1 格。
+    /// 与 LayoutStacks 列流同源粗算；放不下的进"还有 N 项"尾块（点开资源管理器，Dock 同款）。
+    /// 饼堆展开本就可能溢屏，但文件夹能装上千项，把溢出从理论病变成必然病——必须设限。</summary>
+    private int FolderStackCapacity()
+    {
+        int total = (MaxCol() + 1) * RowsPerColumn();
+        int singles = _icons.Values.Count(i => i.Entry.Path.StartsWith("::") || i.IsDir);
+        var (classify, _) = StackGrouping();
+        int piles = _icons.Values
+            .Where(i => !i.Entry.Path.StartsWith("::") && !i.IsDir)
+            .Select(i => classify(i.Entry)).Distinct().Count();
+        return Math.Max(0, total - singles - piles - 1);
+    }
+
+    /// <summary>枚举回来后的呈现：建临时子项图标（初始停在文件夹位、微透明，LayoutStacks
+    /// 展开分支弹飞+渐显）+ 尾块 + 展开期 watcher，然后交给 LayoutAll 统一驱动。</summary>
+    private void PresentFolderStack(string path, List<DesktopEntry> entries)
+    {
+        if (!PathEq(_folderStackPending, path)) return; // 等待期间被取消/换人
+        _folderStackPending = null;
+        if (!Config.UseStacks || !IsStackFolder(path)) return; // 世界变了：不展开
+        var folderIv = _icons.Values.FirstOrDefault(i => PathEq(i.Entry.Path, path));
+        if (folderIv == null) return; // 文件夹已不归本窗口
+
+        if (_folderStack is { } old) { _expandedStack = null; CollapseFolderStack(old, animated: true); } // 换台先收旧的
+
+        double fl = Canvas.GetLeft(folderIv.Root), ft = Canvas.GetTop(folderIv.Root);
+        if (double.IsNaN(fl) || double.IsNaN(ft)) { fl = 0; ft = 0; }
+
+        var view = new FolderStackView { FolderPath = path };
+        var sorted = entries.OrderBy(e => e.DisplayName, StringComparer.CurrentCultureIgnoreCase).ToList();
+        int show = Math.Min(sorted.Count, FolderStackCapacity());
+        foreach (var en in sorted.Take(show))
+            AddFolderStackChild(view, en, fl, ft);
+        view.HiddenCount = sorted.Count - show;
+        MakeFolderStackTile(view);
+        Canvas.SetLeft(view.Tile!, fl);
+        Canvas.SetTop(view.Tile!, ft);
+        view.Tile!.Opacity = 0.2;
+        view.Tile.IsHitTestVisible = false; // 孵化期禁命中，同子项（见 ArmFolderStackHitTest）
+        IconCanvas.Children.Add(view.Tile);
+
+        // 展开期哨兵：桌面 watcher 看不见文件夹内部，shell 菜单删除/外部增删靠它刷新
+        view.RefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        view.RefreshTimer.Tick += (_, _) =>
+        {
+            view.RefreshTimer!.Stop();
+            if (!ReferenceEquals(_folderStack, view)) return;
+            RefreshFolderStack(view);
+            if (view.Watcher == null)
+            {
+                // watcher 没立起来（网络重定向桌面等）：轮询兜底，别让展开视图冻死
+                view.RefreshTimer.Interval = TimeSpan.FromMilliseconds(2000);
+                view.RefreshTimer.Start();
+            }
+        };
+        try
+        {
+            var w = new FileSystemWatcher(path)
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                EnableRaisingEvents = true,
+            };
+            void Poke() => Dispatcher.BeginInvoke(() =>
+            {
+                if (!ReferenceEquals(_folderStack, view)) return;
+                view.RefreshTimer!.Stop();
+                view.RefreshTimer.Start();
+            });
+            w.Created += (_, _) => Poke();
+            w.Deleted += (_, _) => Poke();
+            w.Renamed += (_, _) => Poke();
+            view.Watcher = w;
+        }
+        catch (Exception ex) { Log.Write("folder stack watcher failed: " + ex.Message); }
+
+        _folderStack = view;
+        _expandedStack = DirKey(path);
+        Log.Write($"folder stack expand: {path} ({view.Children.Count} shown, +{view.HiddenCount} more)");
+        LayoutAll(animated: true);
+        ArmFolderStackHitTest(view);
+        LoadFolderStackIconsAsync(view);
+        view.RefreshTimer.Start(); // 布防补刷：枚举快照与 watcher 上岗之间落进来的变化补一轮
+    }
+
+    /// <summary>取图标 Image 元素（文件 = 裸 Image，文件夹 = Grid 包装的第一层）。</summary>
+    private static Image? IconImageOf(IconVisual iv) =>
+        iv.IconPlate.Child as Image ?? (iv.IconPlate.Child as Grid)?.Children.OfType<Image>().FirstOrDefault();
+
+    /// <summary>后台顺序补齐子项图标（deferIcon 的下半场）：shell 取图在 MTA 线程照跑，
+    /// 拉到一张回 UI 填一张（渐进出现，Dock 网格同款手感）。视图收起即停。</summary>
+    private void LoadFolderStackIconsAsync(FolderStackView view)
+    {
+        var work = view.Children
+            .Where(c => IconImageOf(c) is { Source: null })
+            .Select(c => (Icon: c, c.Entry.Path)).ToList();
+        if (work.Count == 0) return;
+        int px = IconPx;
+        Task.Run(() =>
+        {
+            foreach (var (civ, path) in work)
+            {
+                if (!ReferenceEquals(_folderStack, view)) return; // 已收起/换台：别白拉
+                var src = IconLoader.Load(path, px);
+                if (src == null) continue;
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ReferenceEquals(_folderStack, view)) return;
+                    if (IconImageOf(civ) is { Source: null } im)
+                    {
+                        im.Source = src;
+                        PokeElement(civ.Root, 150); // 换图纯渲染变化，动态模式要自己催帧
+                    }
+                });
+            }
+        });
+    }
+
+    private void AddFolderStackChild(FolderStackView view, DesktopEntry en, double fromL, double fromT)
+    {
+        var civ = CreateIconVisual(en, deferIcon: true);
+        civ.StackChild = true;
+        civ.Root.Opacity = 0.2;              // LayoutStacks 展开分支渐显到全显
+        civ.Root.IsHitTestVisible = false;   // 孵化期禁命中（见 ArmFolderStackHitTest）
+        Canvas.SetLeft(civ.Root, fromL);     // 先停在文件夹位：MoveElement 有起点才有飞出动画
+        Canvas.SetTop(civ.Root, fromT);
+        IconCanvas.Children.Add(civ.Root);
+        view.Children.Add(civ);
+    }
+
+    /// <summary>孵化期禁命中的解除：子项/尾块刚孵化时还整摞叠在文件夹位上，双击的第二击
+    /// 会正好砸在最上层的子项上（误启动子文件/误开资源管理器）——飞行到位后才开放交互。</summary>
+    private void ArmFolderStackHitTest(FolderStackView view)
+    {
+        var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ExpandMs) };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            if (!ReferenceEquals(_folderStack, view)) return; // 期间已收起：弥留元素保持惰性
+            foreach (var c in view.Children) c.Root.IsHitTestVisible = true;
+            if (view.Tile != null) view.Tile.IsHitTestVisible = true;
+        };
+        t.Start();
+    }
+
+    /// <summary>展开子项 + 尾块的列流落位（LayoutStacks 单摆循环内调用，紧跟文件夹本体）。</summary>
+    private void LayoutFolderStackChildren(FolderStackView view, Func<(double L, double T)> take, bool animated)
+    {
+        foreach (var c in view.Children)
+        {
+            var (l, t) = take();
+            MoveElement(c.Root, l, t, animated, EaseSpringOut, ExpandMs);
+            if (c.Root.Opacity < 0.99 && !_dragGhosts.Contains(c) && !_cutIcons.Contains(c))
+                FadeTo(c.Root, 1, 200);
+        }
+        if (view.Tile is { } tile)
+        {
+            var (l, t) = take();
+            MoveElement(tile, l, t, animated, EaseSpringOut, ExpandMs);
+            if (tile.Opacity < 0.99) FadeTo(tile, 1, 200);
+        }
+    }
+
+    /// <summary>收起并销毁文件夹堆叠视图：子项飞回文件夹位渐隐，播完出画布；watcher 立即下岗。
+    /// 临时子项可能残留在选择/剪切/焦点/拖影集里，此处一并清（RefreshItems 只清 _icons 的）。</summary>
+    private void CollapseFolderStack(FolderStackView view, bool animated)
+    {
+        if (ReferenceEquals(_folderStack, view)) _folderStack = null;
+        try { view.Watcher?.Dispose(); } catch { }
+        view.Watcher = null;
+        view.RefreshTimer?.Stop();
+
+        var folderIv = _icons.Values.FirstOrDefault(i => PathEq(i.Entry.Path, view.FolderPath));
+        double hl = 0, ht = 0;
+        bool haveHome = folderIv != null && !double.IsNaN(Canvas.GetLeft(folderIv.Root));
+        if (haveHome) { hl = Canvas.GetLeft(folderIv!.Root); ht = Canvas.GetTop(folderIv.Root); }
+
+        var dying = new List<FrameworkElement>();
+        foreach (var c in view.Children)
+        {
+            _selection.Remove(c);
+            if (_focusIcon == c) _focusIcon = null;
+            _dragGhosts.Remove(c);
+            _cutIcons.Remove(c);
+            if (_renaming == c) CancelRename();
+            dying.Add(c.Root);
+        }
+        view.Children.Clear();
+        if (view.Tile != null) dying.Add(view.Tile);
+
+        if (!animated)
+        {
+            foreach (var el in dying) DiscardStackVisual(el);
+            return;
+        }
+        foreach (var el in dying)
+        {
+            el.IsHitTestVisible = false; // 弥留期不接鼠标：渐隐中被点会变成隐形僵尸选中/误开尾块
+            if (haveHome) MoveElement(el, hl, ht, true, EaseInhale, CollapseMs); // 文件夹已无踪则原地淡出
+            FadeTo(el, 0, CollapseMs - 120, 120); // 后段渐隐，与饼堆收起同手感
+        }
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(CollapseMs) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            foreach (var el in dying) DiscardStackVisual(el); // 视图已脱钩，无条件出画布（重开是新视图）
+        };
+        timer.Start();
+    }
+
+    /// <summary>临时视觉出画布前的销账：动态壁纸+去阴影模式下 StripEffects 按元素记了账，
+    /// 字典只在退出动态模式时整体清空——不还账就随每轮展开/收起泄漏（连带钉死整棵可视树）。</summary>
+    private void DiscardStackVisual(FrameworkElement el)
+    {
+        RestoreEffects(el);
+        IconCanvas.Children.Remove(el);
+    }
+
+    /// <summary>展开期间文件夹内部变了：重枚举做增量补删，排序/尾块计数跟着走。</summary>
+    private void RefreshFolderStack(FolderStackView view)
+    {
+        string path = view.FolderPath;
+        Task.Run(() =>
+        {
+            var entries = EnumerateFolderEntries(path);
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!ReferenceEquals(_folderStack, view)) return;
+                var alive = new HashSet<string>(entries.Select(e => e.Path), StringComparer.OrdinalIgnoreCase);
+                foreach (var c in view.Children.Where(c => !alive.Contains(c.Entry.Path)).ToList())
+                {
+                    DiscardStackVisual(c.Root);
+                    _selection.Remove(c);
+                    if (_focusIcon == c) _focusIcon = null;
+                    _dragGhosts.Remove(c);
+                    _cutIcons.Remove(c);
+                    if (_renaming == c) CancelRename();
+                    view.Children.Remove(c);
+                }
+                var have = new HashSet<string>(view.Children.Select(c => c.Entry.Path), StringComparer.OrdinalIgnoreCase);
+                var folderIv = _icons.Values.FirstOrDefault(i => PathEq(i.Entry.Path, path));
+                double fl = 0, ft = 0;
+                if (folderIv != null && !double.IsNaN(Canvas.GetLeft(folderIv.Root)))
+                { fl = Canvas.GetLeft(folderIv.Root); ft = Canvas.GetTop(folderIv.Root); }
+                int cap = FolderStackCapacity();
+                foreach (var en in entries.OrderBy(e => e.DisplayName, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    if (view.Children.Count >= cap) break;
+                    if (have.Contains(en.Path)) continue;
+                    AddFolderStackChild(view, en, fl, ft);
+                }
+                view.Children.Sort((a, b) => string.Compare(a.Entry.DisplayName, b.Entry.DisplayName,
+                    StringComparison.CurrentCultureIgnoreCase));
+                view.HiddenCount = Math.Max(0, entries.Count - view.Children.Count);
+                UpdateFolderStackTileLabel(view);
+                LayoutAll(animated: true);
+                ArmFolderStackHitTest(view); // 补进来的新子项也走孵化期禁命中（对老成员置 true 幂等）
+                LoadFolderStackIconsAsync(view);
+            });
+        });
+    }
+
+    /// <summary>尾块：圆环转出箭头 + "打开文件夹 / 还有 N 项"（Dock 网格的 Open in Finder
+    /// 同款，机主截图样式）。单击展开取代了双击开窗，开资源管理器的入口保留在这。</summary>
+    private void MakeFolderStackTile(FolderStackView view)
+    {
+        var arrow = new System.Windows.Shapes.Path
+        {
+            // 弯柄转出箭头。整数坐标 + LayoutTransform 缩放，避开路径迷你语言的小数分隔符本地化坑
+            Data = Geometry.Parse("M 3,17 C 3,8 9,4 15,4 L 15,0 L 23,7 L 15,14 L 15,9 C 10,9 7,12 7,17 Z"),
+            Fill = new SolidColorBrush(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF)),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            // 视觉配重：箭头质心在右侧的实心箭头上（弯柄纤细无分量），包围盒居中会
+            // 整体偏右下、左上留白刺眼（机主点名）——右/下外边距把它往左上挪回光学中心
+            Margin = new Thickness(0, 0, 6 * S, 3 * S),
+            LayoutTransform = S == 1.0 ? Transform.Identity : new ScaleTransform(S, S),
+        };
+        var ring = new Border
+        {
+            Width = 40 * S, Height = 40 * S,
+            CornerRadius = new CornerRadius(20 * S),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0xE6, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(2.5 * S),
+            Child = arrow,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var card = new Border
+        {
+            Width = 58 * S, Height = 58 * S,
+            CornerRadius = new CornerRadius(12 * S),
+            Background = new SolidColorBrush(Color.FromArgb(0x4C, 0xFF, 0xFF, 0xFF)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0x60, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(1),
+            Child = ring,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var plate = new Grid { Width = 76 * S, Height = 74 * S, HorizontalAlignment = HorizontalAlignment.Center };
+        plate.Children.Add(card);
+
+        var label = new TextBlock
+        {
+            Foreground = Brushes.White,
+            FontSize = 12 * S,
+            FontFamily = LabelFontFamily,
+            FontWeight = FontWeights.Bold,
+            TextAlignment = TextAlignment.Center,
+            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+        };
+        TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
+        var labelPlate = new Border
+        {
+            CornerRadius = new CornerRadius(6 * S),
+            Padding = new Thickness(5 * S, 1, 5 * S, 2),
+            Background = Brushes.Transparent,
+            Child = label,
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+
+        var stack = new StackPanel();
+        stack.Children.Add(plate);
+        stack.Children.Add(labelPlate);
+        var root = new Border
+        {
+            Width = CellW,
+            Child = stack,
+            Background = Brushes.Transparent,
+            Cursor = System.Windows.Input.Cursors.Hand,
+        };
+        string folder = view.FolderPath;
+        // 按下先截住：漏给画布会启动框选夺走捕获，Up 永远到不了（饼堆同款坑）
+        root.MouseLeftButtonDown += (_, e) => e.Handled = true;
+        root.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = false }); }
+            catch (Exception ex) { Log.Write("folder stack tile open failed: " + ex.Message); }
+        };
+        view.Tile = root;
+        view.TileLabel = label;
+        UpdateFolderStackTileLabel(view);
+        ApplyCacheMode(root);
+    }
+
+    private void UpdateFolderStackTileLabel(FolderStackView view)
+    {
+        if (view.TileLabel == null) return;
+        view.TileLabel.Text = view.HiddenCount > 0
+            ? L.T($"还有 {view.HiddenCount} 项", view.HiddenCount == 1 ? "1 More" : $"{view.HiddenCount} More")
+            : L.T("打开文件夹", "Open in Folder");
+    }
+
+    /// <summary>堆叠文件夹角标（右下小圆盘 + V 箭头，展开时翻转朝上）。挂在 CreateIconVisual
+    /// 给文件夹包的 Grid 里；文件成员是裸 Image 进不来（也不该来——饼堆 scrub 强转靠此约）。</summary>
+    private void UpdateStackBadge(IconVisual iv, bool show, bool expanded)
+    {
+        if (iv.IconPlate.Child is not Grid wrap) return; // 非文件夹：无处安放
+        if (!show)
+        {
+            if (iv.StackBadge == null) return;
+            wrap.Children.Remove(iv.StackBadge);
+            iv.StackBadge = null;
+            iv.StackChevronRot = null;
+            PokeElement(iv.Root, 120);
+            return;
+        }
+        bool fresh = iv.StackBadge == null;
+        if (fresh)
+        {
+            var chevron = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 0,0 L 6,5 L 12,0"), // 整数坐标 + LayoutTransform，同饼堆箭头的本地化防坑
+                Stroke = new SolidColorBrush(Color.FromArgb(0xF0, 0xFF, 0xFF, 0xFF)),
+                StrokeThickness = 2.4,
+                StrokeStartLineCap = PenLineCap.Round,
+                StrokeEndLineCap = PenLineCap.Round,
+                StrokeLineJoin = PenLineJoin.Round,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                // 居中三段修（机主点名不齐，真机像素质心迭代实测）：①去掉照抄饼堆的
+                // 2S 下沉（小圆里过矫 ~5px）②角标关布局取整（整像素吸附偏 ~1px）
+                // ③残余 ~0.5 DIU 左上系统偏差用平移精确配平——RenderTransform 随角标
+                // 旋转，∨/∧ 两态同时归零（Margin/LayoutTransform 做不到这点）
+                RenderTransform = new TranslateTransform(0.67 * S, 0.67 * S),
+                LayoutTransform = S == 1.0 ? Transform.Identity : new ScaleTransform(S, S),
+            };
+            var rot = new RotateTransform(0);
+            var badge = new Border
+            {
+                // 关布局取整：窗口级 UseLayoutRounding 会把箭头的排布矩形吸到整像素，
+                // 在 21S 的小圆里偏出 ~2px 且随 180° 旋转镜像放大（真机像素质心实测）；
+                // 亚像素居中 + 抗锯齿在 5px 笔画上不可感，几何居中在任意 DPI 精确成立
+                UseLayoutRounding = false,
+                Width = 21 * S, Height = 21 * S,
+                CornerRadius = new CornerRadius(10.5 * S),
+                Background = new SolidColorBrush(Color.FromArgb(0x99, 0x1C, 0x1C, 0x1E)),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(0x59, 0xFF, 0xFF, 0xFF)),
+                BorderThickness = new Thickness(1),
+                Child = chevron,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                RenderTransform = rot,
+                RenderTransformOrigin = new Point(0.5, 0.5),
+                IsHitTestVisible = false, // 命中交给整图标：单击 = 展开/收起
+            };
+            iv.StackBadge = badge;
+            iv.StackChevronRot = rot;
+            wrap.Children.Add(badge);
+            _hasStackBadges = true;
+        }
+        double want = expanded ? 180 : 0;
+        if (fresh || iv.StackChevronRot!.Angle != want)
+        {
+            iv.StackChevronRot!.Angle = want;
+            PokeElement(iv.Root, 120); // 纯渲染变化，LayoutUpdated 兜不住
+        }
     }
 
     private static void Advance(ref int col, ref int row, int rows)
@@ -1578,7 +2182,10 @@ public partial class MainWindow : Window
 
     private IconVisual? IconAtPoint(Point pos)
     {
-        foreach (var iv in VisibleIcons)
+        // 展开的文件夹堆叠子项也参与命中（右键快照用），且优先——它们后加入画布、绘在上层，
+        // 展开/收起动画瞬间与桌面图标重叠时以视觉上层为准
+        var children = _folderStack?.Children ?? (IEnumerable<IconVisual>)Array.Empty<IconVisual>();
+        foreach (var iv in children.Concat(VisibleIcons))
         {
             double l = Canvas.GetLeft(iv.Root), t = Canvas.GetTop(iv.Root);
             if (double.IsNaN(l) || double.IsNaN(t)) continue;
@@ -1623,7 +2230,9 @@ public partial class MainWindow : Window
 
         if (e.ClickCount == 2)
         {
-            OpenEntry(iv.Entry);
+            // 堆叠文件夹：单击已负责展开/收起，双击不再另开资源管理器（Dock 堆叠无双击语义，
+            // 开窗走展开视图尾块或右键"打开"）。不设 MouseDown，第二击的 Up 不会再触发展开
+            if (!IsStackFolderIcon(iv)) OpenEntry(iv.Entry);
             return;
         }
 
@@ -1801,6 +2410,10 @@ public partial class MainWindow : Window
         if (!iv.MouseDown) return;
         iv.MouseDown = false;
         iv.Root.ReleaseMouseCapture();
+        // 文件夹堆叠：干净单击（没拖成、非 Ctrl 多选手势）= 原地展开/收起（与饼堆单击同语义）。
+        // 拖拽路径在过阈值时已把 MouseDown 清零并释放捕获，走不到这里
+        if (!iv.Dragging && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && IsStackFolderIcon(iv))
+            ToggleFolderStackExpand(iv.Entry.Path);
     }
 
     /// <summary>目标格被占时找最近空格（按网格距离环形扩散）。</summary>
@@ -2401,13 +3014,21 @@ public partial class MainWindow : Window
         {
             string newPath = Path.Combine(Path.GetDirectoryName(oldPath)!, newName);
             if (File.Exists(newPath) || Directory.Exists(newPath)) { SystemSounds.Beep.Play(); return; }
-            // 先把布局位置过户给新名字（保持原归属显示器），watcher 重建图标时原位落座
-            string owner = LayoutFile.FindOwner(oldName) ?? MonKey;
-            if (iv.Canon != null) LayoutFile.Set(owner, newName, iv.Canon);
-            LayoutFile.Remove(oldName);
-            LayoutFile.Save();
+            if (IsOnDesktop(oldPath))
+            {
+                // 先把布局位置过户给新名字（保持原归属显示器），watcher 重建图标时原位落座。
+                // 堆叠子项（不在桌面根）必须跳过：布局档以文件名为键，Remove 会误伤同名桌面条目
+                string owner = LayoutFile.FindOwner(oldName) ?? MonKey;
+                if (iv.Canon != null) LayoutFile.Set(owner, newName, iv.Canon);
+                LayoutFile.Remove(oldName);
+                LayoutFile.Save();
+            }
             if (Directory.Exists(oldPath)) Directory.Move(oldPath, newPath);
             else File.Move(oldPath, newPath);
+            // 文件夹堆叠标记跟着改名走——必须在 Move 成功之后：失败时先迁了标，
+            // 标记指向不存在的新路径，下一轮 RefreshAll 剪枝会把它当死路径静默删掉
+            int fi = Config.StackFolders.FindIndex(f => PathEq(f, oldPath));
+            if (fi >= 0) { Config.StackFolders[fi] = newPath; Config.Save(); }
         }
         catch { SystemSounds.Beep.Play(); }
     }
@@ -2529,6 +3150,17 @@ public partial class MainWindow : Window
                  && Directory.Exists(target.Entry.Path))
         {
             _sprung = true; // 同一目标只弹一次，移开重悬停才再弹
+            if (IsStackFolderIcon(target))
+            {
+                // 堆叠文件夹的弹簧 = 原地展开（Dock 语义），不再另开资源管理器；
+                // 展开后子项虽不可作落点，文件夹本体仍在原位可收货
+                if (_expandedStack != DirKey(target.Entry.Path) && _folderStackPending == null)
+                {
+                    BeginExpandFolderStack(target.Entry.Path);
+                    Log.Write($"spring-expand: {target.Entry.DisplayName}");
+                }
+                return;
+            }
             try
             {
                 Process.Start(new ProcessStartInfo("explorer.exe", $"\"{target.Entry.Path}\"") { UseShellExecute = false });
@@ -2577,11 +3209,29 @@ public partial class MainWindow : Window
         // 自家拖拽（含回收站等虚拟项）：落在文件夹/回收站图标上走移入/删除，否则重定位
         if (InternalDragPaths(e.Data) is { } own)
         {
-            var realOwn = own.Where(p => !p.StartsWith("::")).ToArray();
+            // 组内祖先已覆盖的后代剔除：文件夹和它展开的子项混拖时，SHFileOperation 收到
+            // 重叠路径会先移走爹、再对儿子报"找不到文件"
+            var realOwn = PruneDescendantPaths(own.Where(p => !p.StartsWith("::")).ToArray());
             if (realOwn.Length > 0 && DropTargetIconAt(dropPos, own) is { } target)
             {
-                if (target.Entry.Path == DesktopItemProvider.RecycleBin) DeleteViaShell(realOwn);
-                else MoveIntoFolder(realOwn, target.Entry.Path);
+                if (target.Entry.Path == DesktopItemProvider.RecycleBin) { DeleteViaShell(realOwn); return; }
+                // 堆叠子项拖回自己爹 = 无事发生（同目录移动没有意义，shell 还会弹错误框）
+                var moving = realOwn.Where(p => !PathEq(Path.GetDirectoryName(p), target.Entry.Path)).ToArray();
+                if (moving.Length > 0) MoveIntoFolder(moving, target.Entry.Path);
+                return;
+            }
+            // 堆叠子项拖到空白 = 移出到用户桌面（定案语义，Dock 网格拖出同款）。必须在
+            // RepositionAt 之前拦：子项不在 _icons，RepositionAt 会当成跨屏移交、按文件名
+            // 写布局条目（同名桌面项被污染）。按路径判断，跨屏窗口的落点也走这里。
+            // !IsOnDesktop 加固：settings.json 被手改塞进桌面根也不至于误判桌面项为子项
+            var fromStack = realOwn.Where(p => !IsOnDesktop(p) && Path.GetDirectoryName(p) is { } d && IsStackFolder(d)).ToArray();
+            if (fromStack.Length > 0)
+            {
+                // 落点还在展开区自己的足迹里（手抖几像素的微拖）= 取消，不算"拖出"
+                if (IsOverFolderStackArea(dropPos)) return;
+                MoveIntoFolder(fromStack, DesktopItemProvider.UserDesktop); // 图标增删交给两侧 watcher
+                var rest = own.Where(p => !fromStack.Contains(p, StringComparer.OrdinalIgnoreCase)).ToArray();
+                if (rest.Length > 0) RepositionAt(rest, dropPos);
                 return;
             }
             RepositionAt(own, dropPos);
@@ -3000,6 +3650,11 @@ public partial class MainWindow : Window
     {
         foreach (var iv in _icons.Values) ApplyCacheMode(iv.Root);
         foreach (var pv in _stackPiles.Values) ApplyCacheMode(pv.Root);
+        if (_folderStack is { } fs)
+        {
+            foreach (var c in fs.Children) ApplyCacheMode(c.Root);
+            if (fs.Tile != null) ApplyCacheMode(fs.Tile);
+        }
         if (_presenter == null) _strippedEffects.Clear(); // 已全数恢复，别攥着死引用
     }
 

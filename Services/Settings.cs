@@ -23,6 +23,11 @@ internal sealed class Settings
     /// 只在 UseStacks 时生效。</summary>
     public string StackGroupBy { get; set; } = "kind";
 
+    /// <summary>以堆叠方式展示的桌面文件夹（完整路径，比较一律忽略大小写）。叠放模式下
+    /// 这些文件夹带向下角标、单击原地展开内容（macOS Dock 文件夹堆叠语义，issue #2）。
+    /// 文件夹被删/外部改名后由 Desktop.RefreshAll 剪枝；自家重命名在 CommitRename 过户。</summary>
+    public List<string> StackFolders { get; set; } = new();
+
     /// <summary>菜单序列化进主进程同线程弹出（前台战争终极解）。false = 回退旧 host 内
     /// TrackPopupMenu 路径（settle-wait+重试），新路径出问题时的免重建逃生口。</summary>
     public bool MenuInMainProcess { get; set; } = true;
@@ -124,6 +129,11 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("FastAutostart", out var fa)) s.FastAutostart = fa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
                     s.StackGroupBy = gb.GetString()!;
+                if (doc.RootElement.TryGetProperty("StackFolders", out var sf) && sf.ValueKind == JsonValueKind.Array)
+                    s.StackFolders = sf.EnumerateArray()
+                        .Where(e => e.ValueKind == JsonValueKind.String)
+                        .Select(e => e.GetString()!)
+                        .ToList();
                 if (doc.RootElement.TryGetProperty("Language", out var lg) && lg.ValueKind == JsonValueKind.String)
                     s.Language = lg.GetString()!;
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
@@ -146,7 +156,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

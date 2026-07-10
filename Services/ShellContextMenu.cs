@@ -29,7 +29,22 @@ internal static class ShellContextMenu
                        ID_SORT_SIZE = 0x7008, ID_SORT_KIND = 0x7009, ID_FREE = 0x700A,
                        ID_SETTINGS = 0x700B, ID_PERSONALIZE = 0x700C,
                        ID_STACKS = 0x700D, ID_GROUP_KIND = 0x700E,
-                       ID_GROUP_DATE = 0x700F, ID_GROUP_SIZE = 0x7010;
+                       ID_GROUP_DATE = 0x700F, ID_GROUP_SIZE = 0x7010,
+                       ID_FOLDER_STACK = 0x7011;
+
+    /// <summary>该选中该不该出现"以堆叠方式展示"项：叠放开 + 单选 + 桌面根上的真实文件夹。
+    /// （与 v2 主进程 NativeMenuPresenter.AppendFolderStackItem 同判据，旧路径专用。）</summary>
+    private static bool FolderStackEligible(string[] paths, Settings cfg)
+    {
+        if (!cfg.UseStacks || paths.Length != 1 || paths[0].StartsWith("::")) return false;
+        try { if (!Directory.Exists(paths[0])) return false; } catch { return false; }
+        var parent = Path.GetDirectoryName(paths[0]);
+        return string.Equals(parent, DesktopItemProvider.UserDesktop, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(parent, DesktopItemProvider.PublicDesktop, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool FolderStackChecked(string path, Settings cfg) =>
+        cfg.StackFolders.Any(f => string.Equals(f, path, StringComparison.OrdinalIgnoreCase));
 
     [ComImport, Guid("000214E6-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IShellFolder
@@ -269,6 +284,13 @@ internal static class ShellContextMenu
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_D_DELETE, "删除");
             AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
             AppendMenuW(hMenu, MF_STRING, (UIntPtr)ID_D_PROPS, "属性");
+            var cfg = Settings.Load();
+            if (FolderStackEligible(paths, cfg))
+            {
+                AppendMenuW(hMenu, MF_SEPARATOR, UIntPtr.Zero, null);
+                AppendMenuW(hMenu, MF_STRING | (FolderStackChecked(paths[0], cfg) ? MF_CHECKED : 0),
+                    (UIntPtr)ID_FOLDER_STACK, "以堆叠方式展示");
+            }
 
             int cmd = TrackWithRetry(hMenu, ownerHwnd, screenX, screenY, desktopHwnd);
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
@@ -289,6 +311,7 @@ internal static class ShellContextMenu
                 case ID_D_RENAME: CommandChannel.Signal("RenameSelection"); break;
                 case ID_D_DELETE: CommandChannel.Signal("DeleteSelection"); break;
                 case ID_D_PROPS: CommandChannel.Signal("PropertiesSelection"); break;
+                case ID_FOLDER_STACK: CommandChannel.Signal("ToggleFolderStack"); break;
             }
         }
         finally { DestroyMenu(hMenu); }
@@ -391,13 +414,23 @@ internal static class ShellContextMenu
             using var built = BuildFileMenu(paths, ownerHwnd);
             if (built == null) return;
 
+            // 文件夹堆叠开关（与 v2 主进程菜单同构；旧路径按本文件惯例中文写死）
+            var cfg = Settings.Load();
+            if (FolderStackEligible(paths, cfg))
+            {
+                AppendMenuW(built.HMenu, MF_SEPARATOR, UIntPtr.Zero, null);
+                AppendMenuW(built.HMenu, MF_STRING | (FolderStackChecked(paths[0], cfg) ? MF_CHECKED : 0),
+                    (UIntPtr)ID_FOLDER_STACK, "以堆叠方式展示");
+            }
+
             _activeMenu = built.MenuObj;
             int cmd;
             try { cmd = TrackWithRetry(built.HMenu, ownerHwnd, screenX, screenY, desktopHwnd); }
             finally { _activeMenu = null; }
             PostMessage(ownerHwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero);
             Log.Write($"file menu shown for {paths.Length} item(s), cmd={cmd}");
-            if (cmd > 0) Invoke((IContextMenu)built.MenuObj, cmd - 1, ownerHwnd);
+            if ((uint)cmd == ID_FOLDER_STACK) CommandChannel.Signal("ToggleFolderStack");
+            else if (cmd > 0) Invoke((IContextMenu)built.MenuObj, cmd - 1, ownerHwnd);
         }
         catch (Exception ex) { Log.Write("file menu failed: " + ex); }
     }
