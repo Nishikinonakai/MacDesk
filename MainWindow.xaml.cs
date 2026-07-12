@@ -47,7 +47,10 @@ public partial class MainWindow : Window
     private double GapY => 8 * S;
 
     private static readonly FontFamily LabelFontFamily = new("Segoe UI, Microsoft YaHei UI");
-    private const double MarginTop = 14, MarginRight = 14, MarginBottom = 60, MarginLeft = 14;
+    // 裸边（该侧无任务栏）美学边距；Top/Right 同时是 Canon 锚距的坐标基准（CellToCanon/CanonToCell）。
+    // 任务栏避让不再靠常量（旧 MarginBottom=60 按"48 栏+余量"拍死，真栏矮时白扣一截），
+    // 改为现查工作区 rcWork 四边内缩——见"网格避让真实工作区"节。
+    private const double MarginTop = 14, MarginRight = 14, MarginBottom = 14, MarginLeft = 14;
 
     /// <summary>取图尺寸 = 图标 DIU(64·S) × 本屏 DPI，现算：大档 + 高 DPI（4K@300% 96×3=288）
     /// 会超旧的 256 常量致糊。下限 256（小档也留高清余量）、上限 512（shell 少有更大真源），
@@ -77,6 +80,7 @@ public partial class MainWindow : Window
     private MessageWindow? _msgWin;
     private IntPtr _hwnd;
     private readonly DispatcherTimer? _displayDebounce;
+    private readonly DispatcherTimer? _workAreaDebounce; // 任务栏变化（挪位/改高/隐藏）→ 重排避让
     private readonly HashSet<IconVisual> _selection = new();
 
     // 框选
@@ -151,6 +155,9 @@ public partial class MainWindow : Window
         {
             _displayDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
             _displayDebounce.Tick += (_, _) => { _displayDebounce.Stop(); OnDisplayChangedDebounced(); };
+            // 拖动任务栏会连发 SPI_SETWORKAREA，防抖后全屏重排（各窗口 LayoutAll 自查各自的内缩）
+            _workAreaDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _workAreaDebounce.Tick += (_, _) => { _workAreaDebounce.Stop(); Desktop.LayoutAllWindows(animated: true); };
         }
     }
 
@@ -187,6 +194,7 @@ public partial class MainWindow : Window
         // ── 以下共享职责只挂主屏窗口：显示变化、热键、菜单命令（作用于所有窗口） ──
         _msgWin = new MessageWindow();
         _msgWin.DisplayChanged += (_, _) => Dispatcher.BeginInvoke(() => { _displayDebounce!.Stop(); _displayDebounce.Start(); });
+        _msgWin.WorkAreaChanged += () => Dispatcher.BeginInvoke(() => { _workAreaDebounce!.Stop(); _workAreaDebounce.Start(); });
         _msgWin.QuitRequested += () => Dispatcher.BeginInvoke(App.BeginUserQuit);
         // 双保险：隐藏窗口收不到广播时靠 SystemEvents
         SystemEvents.DisplaySettingsChanged += OnSystemDisplayChanged;
@@ -803,6 +811,31 @@ public partial class MainWindow : Window
     private double PitchX => CellW + GapX;
     private double PitchY => CellH + GapY;
 
+    // ── 网格避让真实工作区（机主 2026-07-12 拍板：任务栏在哪、多高，网格就画到哪） ──
+    // rcWork 一个矩形描述完任务栏所有形态：小图标/隐藏/自动隐藏/四边停靠。贴栏侧留 BarPad
+    // 呼吸、裸侧用 14 美学边距。真机实测：36 DIU 矮任务栏 × 48 档，旧的 60 常量白扣 24，
+    // 底部整整少排一行。**显示层专用**：Canon 锚距函数恒用 MarginTop/MarginRight 常量，
+    // 红线不碰（与 SinkY 同款手法）。内缩值每次 LayoutAll 现查 + SPI_SETWORKAREA 事件刷新
+    // （任务栏变化不广播显示器消息，只靠布局时点查会滞后到下一次重排）。
+    private const double BarPad = 4;
+    private double _insetTop, _insetBottom, _insetLeft, _insetRight; // 工作区内缩（DIU；0=该侧无栏）
+
+    private void UpdateWorkInsets()
+    {
+        if (_hwnd == IntPtr.Zero || Interop.Monitors.WorkInsets(_hwnd) is not { } px) return;
+        double k = Math.Max(_dpiK, 0.01);
+        (_insetLeft, _insetTop, _insetRight, _insetBottom) =
+            (px.Left / k, px.Top / k, px.Right / k, px.Bottom / k);
+    }
+
+    private double EffTop => _insetTop > 0.5 ? _insetTop + BarPad : MarginTop;
+    // 底边不加 BarPad、贴平工作区（原生桌面同款）：格子下缘是标签留白不是实墨，实际文字
+    // 离栏还有约 7 DIU；而 +4 会在"内容恰好排满工作区"时白丢整整一行（真机 40 DIU 栏 ×
+    // 48 档：8 行内容底边 680 = 工作区底边，严丝合缝，加 4 就掉回 7 行）
+    private double EffBottom => _insetBottom > 0.5 ? _insetBottom : MarginBottom;
+    private double EffLeft => _insetLeft > 0.5 ? _insetLeft + BarPad : MarginLeft;
+    private double EffRight => _insetRight > 0.5 ? _insetRight + BarPad : MarginRight;
+
     // ── 首行下沉（给第三方顶部菜单栏让位，issue #11 的"贴顶"观感同源） ──
     // 只作用于**显示层**：CellPos/RowsPerColumn/SnapToGrid/PosToCell/MarkFootprint 一律从
     // GridTop 起算；CellToCanon/CanonToCell/CanonToPos 坚决不掺——Canon 坐标系必须与关闭态
@@ -819,12 +852,12 @@ public partial class MainWindow : Window
         {
             if (!Config.FirstRowSink) return 0;
             var (_, h) = WorkSize;
-            return h - MarginTop - SinkAmount - MarginBottom >= CellH ? SinkAmount : 0;
+            return h - EffTop - SinkAmount - EffBottom >= CellH ? SinkAmount : 0;
         }
     }
 
-    /// <summary>显示网格的首行顶边。显示路径用它；Canon 路径恒用 MarginTop。</summary>
-    private double GridTop => MarginTop + SinkY;
+    /// <summary>显示网格的首行顶边 = 工作区避让 + 首行下沉。显示路径用它；Canon 路径恒用 MarginTop。</summary>
+    private double GridTop => EffTop + SinkY;
 
     /// <summary>规范锚距 → 当前尺寸下的显示左上角（固定间距、右上/近边锚定，只做屏内钳制）。</summary>
     private (double L, double T) CanonToPos(CanonPos c)
@@ -865,26 +898,26 @@ public partial class MainWindow : Window
     private (double L, double T) CellPos(int col, int row)
     {
         var (w, _) = WorkSize;
-        return (w - MarginRight - CellW - col * (CellW + GapX), GridTop + row * (CellH + GapY));
+        return (w - EffRight - CellW - col * (CellW + GapX), GridTop + row * (CellH + GapY));
     }
 
     private int RowsPerColumn()
     {
         var (_, h) = WorkSize;
-        return Math.Max(1, (int)((h - GridTop - MarginBottom + GapY) / (CellH + GapY)));
+        return Math.Max(1, (int)((h - GridTop - EffBottom + GapY) / (CellH + GapY)));
     }
 
-    /// <summary>最左可用列：保证最左格左上角 ≥ MarginLeft，杜绝左缘半截图标。</summary>
+    /// <summary>最左可用列：保证最左格左上角 ≥ 左侧有效边距，杜绝左缘半截图标。</summary>
     private int MaxCol()
     {
         var (w, _) = WorkSize;
-        return Math.Max(0, (int)((w - MarginRight - CellW - MarginLeft) / (CellW + GapX)));
+        return Math.Max(0, (int)((w - EffRight - CellW - EffLeft) / (CellW + GapX)));
     }
 
     /// <summary>吸附到最近的右锚网格格子。</summary>
     private (double L, double T) SnapToGrid(double l, double t)
     {
-        int col = (int)Math.Round((WorkSize.W - MarginRight - CellW - l) / (CellW + GapX));
+        int col = (int)Math.Round((WorkSize.W - EffRight - CellW - l) / (CellW + GapX));
         int row = (int)Math.Round((t - GridTop) / (CellH + GapY));
         col = Math.Clamp(col, 0, MaxCol());
         row = Math.Clamp(row, 0, RowsPerColumn() - 1);
@@ -901,12 +934,12 @@ public partial class MainWindow : Window
     {
         var (w, _) = WorkSize;
         double strideX = CellW + GapX, strideY = CellH + GapY;
-        double colExact = (w - MarginRight - CellW - l) / strideX;
+        double colExact = (w - EffRight - CellW - l) / strideX;
         double rowExact = (t - GridTop) / strideY;
         for (int col = (int)Math.Floor(colExact); col <= (int)Math.Ceiling(colExact); col++)
         {
             if (col < 0 || col > MaxCol()) continue;
-            double cl = w - MarginRight - CellW - col * strideX;
+            double cl = w - EffRight - CellW - col * strideX;
             if (cl + CellW <= l || cl >= l + CellW) continue; // 该列与脚印无横向重叠
             for (int row = (int)Math.Floor(rowExact); row <= (int)Math.Ceiling(rowExact); row++)
             {
@@ -952,6 +985,7 @@ public partial class MainWindow : Window
     {
         var (w, h) = WorkSize;
         if (w < 1 || h < 1) return;
+        UpdateWorkInsets(); // 任务栏可能刚变过（SPI_SETWORKAREA 也会触发到这），每次重排都拿新鲜值
         Log.Write($"[{MonKey}] layout pass worksize={w:F0}x{h:F0}{(Config.FreePlacement ? " [free]" : "")}{(Config.UseStacks ? " [stacks]" : "")}");
 
         PlaceMissing(animated); // 问号占位恒按锚距摆放，与模式无关
@@ -2083,7 +2117,7 @@ public partial class MainWindow : Window
     private (int, int) PosToCell(double l, double t)
     {
         var (w, _) = WorkSize;
-        int col = (int)Math.Round((w - MarginRight - CellW - l) / (CellW + GapX));
+        int col = (int)Math.Round((w - EffRight - CellW - l) / (CellW + GapX));
         int row = (int)Math.Round((t - GridTop) / (CellH + GapY));
         return (col, row);
     }

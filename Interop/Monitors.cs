@@ -45,6 +45,22 @@ internal static class Monitors
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern bool EnumDisplayDevicesW(string? device, uint iDevNum, ref DISPLAY_DEVICE dd, uint flags);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+
+    /// <summary>本窗口所在显示器的工作区四边内缩（物理 px）：rcWork 相对 rcMonitor。
+    /// 任务栏的所有形态——小图标/隐藏/自动隐藏/四边停靠——全被这一个矩形描述，
+    /// 布局按它避让，不猜任务栏多高。现查不缓存：任务栏挪位/改高不触发显示器事件。</summary>
+    public static (int Left, int Top, int Right, int Bottom)? WorkInsets(IntPtr hwnd)
+    {
+        var h = MonitorFromWindow(hwnd, 2 /* MONITOR_DEFAULTTONEAREST */);
+        if (h == IntPtr.Zero) return null;
+        var mi = new MONITORINFOEX { cbSize = Marshal.SizeOf<MONITORINFOEX>() };
+        if (!GetMonitorInfoW(h, ref mi)) return null;
+        return (mi.rcWork.Left - mi.rcMonitor.Left, mi.rcWork.Top - mi.rcMonitor.Top,
+                mi.rcMonitor.Right - mi.rcWork.Right, mi.rcMonitor.Bottom - mi.rcWork.Bottom);
+    }
+
     /// <summary>枚举当前接入的显示器。主显示器排第一。</summary>
     public static List<MonitorInfo> GetAll()
     {
