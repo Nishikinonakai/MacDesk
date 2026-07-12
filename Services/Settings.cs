@@ -67,10 +67,11 @@ internal sealed class Settings
     /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
     public int IconSize { get; set; } = 64;
 
-    /// <summary>软件渲染（等效 --soft）：整进程绕开显卡走 WPF 软件光栅化。个别核显驱动在
-    /// 硬件合成路径把壁纸镜像亮部烧成彩色噪点（issue #1：Intel UHD 630，升最新驱动无效，
-    /// 软件渲染实测干净）。默认关（绝大多数显卡正常，软件渲染白费 CPU）。重启生效。</summary>
-    public bool SoftwareRender { get; set; }
+    /// <summary>渲染方式：auto（默认：检测到老世代 Intel 核显即整进程软渲，见 Gpu.cs）｜
+    /// hardware（强制硬件）｜software（强制软件，等效 --soft）。老 Intel 核显的原生 D3D9
+    /// 驱动在硬件合成路径把壁纸镜像亮部烧成噪点/白块（issue #1：UHD 620/630 实锤，1:1
+    /// 零缩放照烧、最新驱动无效，软件渲染实测干净）。重启生效。</summary>
+    public string RenderMode { get; set; } = "auto";
 
     // ── 原生桌面虚拟图标开关（Windows"桌面图标设置"那一组，方向来自 PR #3 @climashscape）──
     // 首次启动默认跟随原生桌面注册表（HideDesktopIcons\NewStartPanel，1=隐藏；
@@ -139,7 +140,10 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
-                if (doc.RootElement.TryGetProperty("SoftwareRender", out var sr)) s.SoftwareRender = sr.GetBoolean();
+                if (doc.RootElement.TryGetProperty("RenderMode", out var rm) && rm.ValueKind == JsonValueKind.String)
+                    s.RenderMode = rm.GetString()!;
+                else if (doc.RootElement.TryGetProperty("SoftwareRender", out var sr) && sr.ValueKind == JsonValueKind.True)
+                    s.RenderMode = "software"; // ≤v1.3.0 的布尔开关：开过的迁移成强制软件；没开过的走 auto
                 if (doc.RootElement.TryGetProperty("ShowRecycleBin", out var v1)) s.ShowRecycleBin = v1.GetBoolean();
                 if (doc.RootElement.TryGetProperty("ShowThisPC", out var v2)) s.ShowThisPC = v2.GetBoolean();
                 if (doc.RootElement.TryGetProperty("ShowUserFiles", out var v3)) s.ShowUserFiles = v3.GetBoolean();
@@ -156,7 +160,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, SoftwareRender, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

@@ -534,11 +534,21 @@ internal sealed class SettingsWindow : Window
             Config.Save();
         }), L.T("选中文件后按空格，调用已安装的第三方预览器（QuickLook / Seer / PowerToys Peek 0.95+）。\n没装任何预览器时空格无效（不影响首字母定位）。", "With a file selected, press Space to invoke an installed third-party previewer (QuickLook / Seer / PowerToys Peek 0.95+).\nDoes nothing if none is installed (type-ahead selection still works).")));
         startup.Children.Add(Separator());
-        startup.Children.Add(Row(L.T("软件渲染", "Software Rendering"), Toggle(Config.SoftwareRender, v =>
+        var renderBox = new ComboBox { Width = 150, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
+        var renderKeys = new[] { "auto", "hardware", "software" };
+        renderBox.Items.Add(L.T("自动（推荐）", "Auto (recommended)"));
+        renderBox.Items.Add(L.T("强制硬件", "Force hardware"));
+        renderBox.Items.Add(L.T("强制软件", "Force software"));
+        renderBox.SelectedIndex = Math.Max(0, Array.IndexOf(renderKeys, Config.RenderMode));
+        renderBox.SelectionChanged += (_, _) =>
         {
-            Config.SoftwareRender = v;
+            if (renderBox.SelectedIndex < 0) return;
+            Config.RenderMode = renderKeys[renderBox.SelectedIndex];
             Config.Save();
-        }), L.T("壁纸或图标出现彩色噪点、亮部烧白时开启（个别核显驱动的硬件合成缺陷，如 Intel UHD 630）。\n重启 MacDesk 生效。", "Turn on if the wallpaper or icons show colored speckles or blown-out highlights (a hardware-compositing defect in some iGPU drivers, e.g. Intel UHD 630).\nTakes effect after restarting MacDesk.")));
+        };
+        startup.Children.Add(Row(L.T("渲染方式", "Rendering"), renderBox,
+            L.T("自动 = 检测到老款 Intel 核显（HD/UHD 6xx、Iris Plus 等）时改用软件渲染——这批核显的驱动会把壁纸亮部烧成噪点/白块（issue #1），其余机器保持硬件渲染。\n壁纸仍异常可选「强制软件」。重启 MacDesk 生效。",
+                "Auto = switches to software rendering when a legacy Intel iGPU is detected (HD/UHD 6xx, Iris Plus, etc. — their drivers burn wallpaper highlights into speckles/white, issue #1); all other machines stay hardware-rendered.\nPick \"Force software\" if the wallpaper still looks wrong. Takes effect after restarting MacDesk.")));
         p.Children.Add(Card(startup));
 
         // 桌面图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）
