@@ -803,6 +803,29 @@ public partial class MainWindow : Window
     private double PitchX => CellW + GapX;
     private double PitchY => CellH + GapY;
 
+    // ── 首行下沉（给第三方顶部菜单栏让位，issue #11 的"贴顶"观感同源） ──
+    // 只作用于**显示层**：CellPos/RowsPerColumn/SnapToGrid/PosToCell/MarkFootprint 一律从
+    // GridTop 起算；CellToCanon/CanonToCell/CanonToPos 坚决不掺——Canon 坐标系必须与关闭态
+    // 完全一致（"绝不回写"红线）。若把 MarginTop 本身加 56，存量 Canon 反推行号会正好落在
+    // Math.Round 的 .5 中点上（56 恰为默认档半行），ToEven 舍入导致隔行成对碰撞、图标洗牌。
+    // 56 = 默认档半行 (104+8)/2，DIU 常数不乘 S：菜单栏高度不随图标档缩放。
+    private const double SinkAmount = 56;
+
+    /// <summary>生效的下沉量。退化保护：下沉后连一整行都排不下（矮屏/投影）就放弃下沉——
+    /// 否则 RowsPerColumn 的 Math.Max(1,…) 兜底行会被顶进 MarginBottom 保留区甚至屏外。</summary>
+    private double SinkY
+    {
+        get
+        {
+            if (!Config.FirstRowSink) return 0;
+            var (_, h) = WorkSize;
+            return h - MarginTop - SinkAmount - MarginBottom >= CellH ? SinkAmount : 0;
+        }
+    }
+
+    /// <summary>显示网格的首行顶边。显示路径用它；Canon 路径恒用 MarginTop。</summary>
+    private double GridTop => MarginTop + SinkY;
+
     /// <summary>规范锚距 → 当前尺寸下的显示左上角（固定间距、右上/近边锚定，只做屏内钳制）。</summary>
     private (double L, double T) CanonToPos(CanonPos c)
     {
@@ -842,13 +865,13 @@ public partial class MainWindow : Window
     private (double L, double T) CellPos(int col, int row)
     {
         var (w, _) = WorkSize;
-        return (w - MarginRight - CellW - col * (CellW + GapX), MarginTop + row * (CellH + GapY));
+        return (w - MarginRight - CellW - col * (CellW + GapX), GridTop + row * (CellH + GapY));
     }
 
     private int RowsPerColumn()
     {
         var (_, h) = WorkSize;
-        return Math.Max(1, (int)((h - MarginTop - MarginBottom + GapY) / (CellH + GapY)));
+        return Math.Max(1, (int)((h - GridTop - MarginBottom + GapY) / (CellH + GapY)));
     }
 
     /// <summary>最左可用列：保证最左格左上角 ≥ MarginLeft，杜绝左缘半截图标。</summary>
@@ -862,7 +885,7 @@ public partial class MainWindow : Window
     private (double L, double T) SnapToGrid(double l, double t)
     {
         int col = (int)Math.Round((WorkSize.W - MarginRight - CellW - l) / (CellW + GapX));
-        int row = (int)Math.Round((t - MarginTop) / (CellH + GapY));
+        int row = (int)Math.Round((t - GridTop) / (CellH + GapY));
         col = Math.Clamp(col, 0, MaxCol());
         row = Math.Clamp(row, 0, RowsPerColumn() - 1);
         return CellPos(col, row);
@@ -879,7 +902,7 @@ public partial class MainWindow : Window
         var (w, _) = WorkSize;
         double strideX = CellW + GapX, strideY = CellH + GapY;
         double colExact = (w - MarginRight - CellW - l) / strideX;
-        double rowExact = (t - MarginTop) / strideY;
+        double rowExact = (t - GridTop) / strideY;
         for (int col = (int)Math.Floor(colExact); col <= (int)Math.Ceiling(colExact); col++)
         {
             if (col < 0 || col > MaxCol()) continue;
@@ -888,7 +911,7 @@ public partial class MainWindow : Window
             for (int row = (int)Math.Floor(rowExact); row <= (int)Math.Ceiling(rowExact); row++)
             {
                 if (row < 0 || row >= RowsPerColumn()) continue;
-                double ct = MarginTop + row * strideY;
+                double ct = GridTop + row * strideY;
                 if (ct + CellH <= t || ct >= t + CellH) continue;
                 occupied.Add((col, row));
             }
@@ -2061,7 +2084,7 @@ public partial class MainWindow : Window
     {
         var (w, _) = WorkSize;
         int col = (int)Math.Round((w - MarginRight - CellW - l) / (CellW + GapX));
-        int row = (int)Math.Round((t - MarginTop) / (CellH + GapY));
+        int row = (int)Math.Round((t - GridTop) / (CellH + GapY));
         return (col, row);
     }
 
