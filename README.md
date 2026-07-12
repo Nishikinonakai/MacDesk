@@ -93,6 +93,11 @@ the new installer and replaces itself silently, then relaunches.
   (name / date / size / kind), both one-shot and undoable.
 - **Free placement mode** — macOS `arrangeBy=none`: drop icons exactly where
   you release them.
+- **Work-area-aware grid** — the grid reads the taskbar's real size and position
+  (any edge, small icons, hidden or auto-hidden) and claims exactly the usable
+  space — no guessed reserves.
+- **Sink First Row** (Settings → Desktop) — optional half-row top inset so
+  third-party top menu bars don't overlap the first icon row.
 - **Multi-monitor, the macOS way.** One desktop window per monitor (mixed DPI
   handled per window). Icons *belong* to a monitor; drag them across screens to
   move them. Unplug a monitor and its icons consolidate onto the primary display
