@@ -101,7 +101,7 @@ internal sealed class SettingsWindow : Window
 
         Title = L.T("MacDesk 设置", "MacDesk Settings");
         Width = 760;
-        Height = 540;
+        Height = 600; // 目标：每页一屏放完不滚动（黑名单编辑器所在页除外）；768 高小屏减任务栏仍放得下
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         ResizeMode = ResizeMode.NoResize;
         Background = ContentBg;
@@ -129,12 +129,15 @@ internal sealed class SettingsWindow : Window
         _nav.BorderThickness = new Thickness(0);
         _nav.Background = Brushes.Transparent;
         _nav.ItemContainerStyle = NavItemStyle();
-        // Tag = 语言无关的稳定键（ShowPage 按键路由，显示文本另算）
+        // Tag = 语言无关的稳定键（ShowPage 按键路由，显示文本另算）。
+        // 导航按语义分类、页内按使用频率排；排障向开关全部沉到"高级"，别让普通用户翻到。
         foreach (var (icon, key, name) in new[]
         {
             ("⚙️", "general", L.T("通用", "General")),
+            ("🖥️", "desktop", L.T("桌面", "Desktop")),
             ("🎨", "appearance", L.T("外观", "Appearance")),
             ("📋", "menu", L.T("右键菜单", "Context Menu")),
+            ("🛠️", "advanced", L.T("高级", "Advanced")),
             ("ℹ️", "about", L.T("关于", "About")),
         })
         {
@@ -189,8 +192,10 @@ internal sealed class SettingsWindow : Window
 
     private void ShowPage(string key) => _page.Content = key switch
     {
+        "desktop" => BuildDesktop(),
         "appearance" => BuildAppearance(),
         "menu" => BuildMenuPage(),
+        "advanced" => BuildAdvanced(),
         "about" => BuildAbout(),
         _ => BuildGeneral(),
     };
@@ -209,6 +214,16 @@ internal sealed class SettingsWindow : Window
         });
         return p;
     }
+
+    /// <summary>卡片上方的小节标题（macOS 系统设置的分组小灰字）：滚动/扫视时的路标。</summary>
+    private TextBlock Section(string title) => new()
+    {
+        Text = title,
+        FontSize = 11.5,
+        FontWeight = FontWeights.SemiBold,
+        Foreground = Subtle,
+        Margin = new Thickness(4, 2, 0, 6),
+    };
 
     private Border Card(UIElement content) => new()
     {
@@ -498,6 +513,7 @@ internal sealed class SettingsWindow : Window
     {
         var p = Page(L.T("通用", "General"));
 
+        p.Children.Add(Section(L.T("启动", "Startup")));
         var startup = new StackPanel();
         startup.Children.Add(Row(L.T("开机自启", "Launch at Startup"), Toggle(Autostart.IsEnabled(),
             v => { if (v) Autostart.Enable(App.LaunchModeArgs, Config.FastAutostart); else Autostart.Disable(); })));
@@ -508,11 +524,16 @@ internal sealed class SettingsWindow : Window
             Config.Save();
             if (Autostart.IsEnabled()) Autostart.Enable(App.LaunchModeArgs, v); // 就地切换机制
         }), L.T("用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟）", "Use a scheduled task instead of a Run entry: starts right at logon, skipping the Windows startup-app queue")));
-        startup.Children.Add(Separator());
-        startup.Children.Add(Row(L.T("菜单在主进程弹出", "Menus in Main Process"), Toggle(Config.MenuInMainProcess,
-            v => { Config.MenuInMainProcess = v; Config.Save(); }),
-            L.T("推荐开启；关闭需重启 MacDesk 生效", "Recommended on; turning off takes effect after restarting MacDesk")));
-        startup.Children.Add(Separator());
+        p.Children.Add(Card(startup));
+
+        p.Children.Add(Section(L.T("语言与交互", "Language & Interaction")));
+        var interact = new StackPanel();
+        interact.Children.Add(Row(L.T("空格预览文件", "Space to Preview"), Toggle(Config.SpacePreview, v =>
+        {
+            Config.SpacePreview = v;
+            Config.Save();
+        }), L.T("选中文件后按空格，调用已安装的第三方预览器（QuickLook / Seer / PowerToys Peek 0.95+）。\n没装任何预览器时空格无效（不影响首字母定位）。", "With a file selected, press Space to invoke an installed third-party previewer (QuickLook / Seer / PowerToys Peek 0.95+).\nDoes nothing if none is installed (type-ahead selection still works).")));
+        interact.Children.Add(Separator());
         var langBox = new ComboBox { Width = 150, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
         var langKeys = new[] { "auto", "zh", "en" };
         langBox.Items.Add(L.T("跟随系统", "Follow System"));
@@ -525,52 +546,70 @@ internal sealed class SettingsWindow : Window
             Config.Language = langKeys[langBox.SelectedIndex];
             Config.Save();
         };
-        startup.Children.Add(Row(L.T("语言 / Language", "Language / 语言"), langBox,
+        interact.Children.Add(Row(L.T("语言 / Language", "Language / 语言"), langBox,
             L.T("重启 MacDesk 生效", "Takes effect after restarting MacDesk")));
-        startup.Children.Add(Separator());
-        startup.Children.Add(Row(L.T("空格预览文件", "Space to Preview"), Toggle(Config.SpacePreview, v =>
-        {
-            Config.SpacePreview = v;
-            Config.Save();
-        }), L.T("选中文件后按空格，调用已安装的第三方预览器（QuickLook / Seer / PowerToys Peek 0.95+）。\n没装任何预览器时空格无效（不影响首字母定位）。", "With a file selected, press Space to invoke an installed third-party previewer (QuickLook / Seer / PowerToys Peek 0.95+).\nDoes nothing if none is installed (type-ahead selection still works).")));
-        startup.Children.Add(Separator());
-        var renderBox = new ComboBox { Width = 150, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
-        var renderKeys = new[] { "auto", "hardware", "software" };
-        renderBox.Items.Add(L.T("自动（推荐）", "Auto (recommended)"));
-        renderBox.Items.Add(L.T("强制硬件", "Force hardware"));
-        renderBox.Items.Add(L.T("强制软件", "Force software"));
-        renderBox.SelectedIndex = Math.Max(0, Array.IndexOf(renderKeys, Config.RenderMode));
-        renderBox.SelectionChanged += (_, _) =>
-        {
-            if (renderBox.SelectedIndex < 0) return;
-            Config.RenderMode = renderKeys[renderBox.SelectedIndex];
-            Config.Save();
-        };
-        startup.Children.Add(Row(L.T("渲染方式", "Rendering"), renderBox,
-            L.T("自动 = 检测到老款 Intel 核显（HD/UHD 6xx、Iris Plus 等）时改用软件渲染——这批核显的驱动会把壁纸亮部烧成噪点/白块（issue #1），其余机器保持硬件渲染。\n壁纸仍异常可选「强制软件」。重启 MacDesk 生效。",
-                "Auto = switches to software rendering when a legacy Intel iGPU is detected (HD/UHD 6xx, Iris Plus, etc. — their drivers burn wallpaper highlights into speckles/white, issue #1); all other machines stay hardware-rendered.\nPick \"Force software\" if the wallpaper still looks wrong. Takes effect after restarting MacDesk.")));
-        p.Children.Add(Card(startup));
+        p.Children.Add(Card(interact));
 
-        // 桌面图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）
-        var deskIcons = new StackPanel();
-        void IconToggle(string zh, string en, Func<bool> get, Action<bool> set, string? hintZh = null, string? hintEn = null, bool sep = true)
+        return p;
+    }
+
+    // ── 桌面 ──────────────────────────────────────────────────
+
+    private UIElement BuildDesktop()
+    {
+        var p = Page(L.T("桌面", "Desktop"));
+
+        p.Children.Add(Section(L.T("布局", "Layout")));
+        var layout = new StackPanel();
+        layout.Children.Add(Row(L.T("首行下沉", "Sink First Row"), Toggle(Config.FirstRowSink, v =>
         {
-            deskIcons.Children.Add(Row(L.T(zh, en), Toggle(get(), v =>
+            Config.FirstRowSink = v;
+            Config.Save();
+            Desktop.LayoutAllWindows(animated: true);
+        }), L.T("图标网格整体下移半行，给顶部菜单栏类软件让出空间，首行图标不再被吸顶窗口压住。\n自由摆放模式下手动摆好的图标不动，只影响自动排布；屏幕太矮放不下一行时自动忽略。",
+            "Shifts the icon grid down half a row to make room for top menu-bar apps, keeping the first row clear of docked bars.\nIn free placement, manually placed icons stay put - only auto-flow is affected. Ignored when the screen is too short for a row.")));
+        p.Children.Add(Card(layout));
+
+        // 系统图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）。
+        // 5 个同质布尔各占整行太费竖向空间，压成 2 列网格
+        p.Children.Add(Section(L.T("系统图标", "System Icons")));
+        var deskIcons = new StackPanel();
+        var iconGrid = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2 };
+        void IconCell(string zh, string en, Func<bool> get, Action<bool> set)
+        {
+            var g = new Grid { Margin = new Thickness(0, 9, 28, 9) };
+            g.ColumnDefinitions.Add(new ColumnDefinition());
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var label = new TextBlock { Text = L.T(zh, en), FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
+            var tg = Toggle(get(), v =>
             {
                 set(v);
                 Config.Save();
                 Desktop.RefreshAll(); // 即时增删图标；布局条目保留，重新开启原位回归
-            }), hintZh == null ? null : L.T(hintZh, hintEn!)));
-            if (sep) deskIcons.Children.Add(Separator());
+            });
+            Grid.SetColumn(label, 0);
+            Grid.SetColumn(tg, 1);
+            g.Children.Add(label);
+            g.Children.Add(tg);
+            iconGrid.Children.Add(g);
         }
-        IconToggle("显示回收站", "Show Recycle Bin", () => Config.ShowRecycleBin, v => Config.ShowRecycleBin = v,
-            "桌面图标开关（对应 Windows\"桌面图标设置\"），首次启动默认跟随原生桌面", "Desktop icon toggles (Windows \"Desktop Icon Settings\" set); first run follows the native desktop");
-        IconToggle("显示此电脑", "Show This PC", () => Config.ShowThisPC, v => Config.ShowThisPC = v);
-        IconToggle("显示用户文件", "Show User's Files", () => Config.ShowUserFiles, v => Config.ShowUserFiles = v);
-        IconToggle("显示网络", "Show Network", () => Config.ShowNetwork, v => Config.ShowNetwork = v);
-        IconToggle("显示控制面板", "Show Control Panel", () => Config.ShowControlPanel, v => Config.ShowControlPanel = v, sep: false);
+        IconCell("回收站", "Recycle Bin", () => Config.ShowRecycleBin, v => Config.ShowRecycleBin = v);
+        IconCell("此电脑", "This PC", () => Config.ShowThisPC, v => Config.ShowThisPC = v);
+        IconCell("用户文件", "User's Files", () => Config.ShowUserFiles, v => Config.ShowUserFiles = v);
+        IconCell("网络", "Network", () => Config.ShowNetwork, v => Config.ShowNetwork = v);
+        IconCell("控制面板", "Control Panel", () => Config.ShowControlPanel, v => Config.ShowControlPanel = v);
+        deskIcons.Children.Add(iconGrid);
+        deskIcons.Children.Add(new TextBlock
+        {
+            Text = L.T("对应 Windows「桌面图标设置」；首次启动默认跟随原生桌面。", "The Windows \"Desktop Icon Settings\" set; the first run follows the native desktop."),
+            FontSize = 11,
+            Foreground = Subtle,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 0, 0, 8),
+        });
         p.Children.Add(Card(deskIcons));
 
+        p.Children.Add(Section(L.T("布局备份", "Layout Backup")));
         var layoutSec = new StackPanel();
         var importBtn = new Button { Content = L.T("导入…", "Import…"), Padding = new Thickness(14, 4, 14, 4) };
         importBtn.Click += (_, _) =>
@@ -587,9 +626,6 @@ internal sealed class SettingsWindow : Window
             }
             catch (Exception ex) { MessageBox.Show(L.T("导入失败：", "Import failed: ") + ex.Message, "MacDesk"); }
         };
-        layoutSec.Children.Add(Row(L.T("导入原生桌面布局", "Import Native Desktop Layout"), importBtn, L.T("读取隐藏的原生桌面图标位置并应用到 MacDesk", "Read the hidden native desktop icon positions and apply them to MacDesk")));
-
-        layoutSec.Children.Add(Separator());
         var exportBtn = new Button { Content = L.T("导出…", "Export…"), Padding = new Thickness(14, 4, 14, 4) };
         exportBtn.Click += (_, _) =>
         {
@@ -607,9 +643,6 @@ internal sealed class SettingsWindow : Window
             }
             catch (Exception ex) { MessageBox.Show(L.T("导出失败：", "Export failed: ") + ex.Message, "MacDesk"); }
         };
-        layoutSec.Children.Add(Row(L.T("导出布局", "Export Layout"), exportBtn, L.T("把当前图标布局存成文件（换机/重装时导入恢复）", "Save the current icon layout to a file (import it after switching machines or reinstalling)")));
-
-        layoutSec.Children.Add(Separator());
         var importLayoutBtn = new Button { Content = L.T("导入…", "Import…"), Padding = new Thickness(14, 4, 14, 4) };
         importLayoutBtn.Click += (_, _) =>
         {
@@ -630,15 +663,58 @@ internal sealed class SettingsWindow : Window
                 MessageBox.Show(L.T("导入失败：文件不是有效的 MacDesk 布局。当前布局未受影响。", "Import failed: not a valid MacDesk layout file. The current layout is untouched."), "MacDesk",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
         };
-        layoutSec.Children.Add(Row(L.T("导入布局", "Import Layout"), importLayoutBtn, L.T("从导出的布局文件恢复图标摆放", "Restore icon arrangement from an exported layout file")));
-
+        // 同类动作并排放一行（导出/导入是一对），别一键一行拉长页面；原生导入语义不同（一次性迁移）单独成行
+        var backupBtns = new StackPanel { Orientation = Orientation.Horizontal };
+        exportBtn.Margin = new Thickness(0, 0, 8, 0);
+        backupBtns.Children.Add(exportBtn);
+        backupBtns.Children.Add(importLayoutBtn);
+        layoutSec.Children.Add(Row(L.T("备份与恢复", "Back Up & Restore"), backupBtns,
+            L.T("导出把当前图标布局存成文件；导入从布局文件恢复摆放（当前布局会先自动备份）", "Export saves the current icon layout to a file; Import restores from one (the current layout is backed up automatically first)")));
+        layoutSec.Children.Add(Separator());
+        layoutSec.Children.Add(Row(L.T("导入原生桌面布局", "Import Native Desktop Layout"), importBtn, L.T("读取隐藏的原生桌面图标位置并应用到 MacDesk", "Read the hidden native desktop icon positions and apply them to MacDesk")));
         p.Children.Add(Card(layoutSec));
 
+        return p;
+    }
+
+    // ── 高级 ──────────────────────────────────────────────────
+
+    private UIElement BuildAdvanced()
+    {
+        var p = Page(L.T("高级", "Advanced"));
+
+        p.Children.Add(Section(L.T("排障", "Troubleshooting")));
+        var trouble = new StackPanel();
+        var renderBox = new ComboBox { Width = 150, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
+        var renderKeys = new[] { "auto", "hardware", "software" };
+        renderBox.Items.Add(L.T("自动（推荐）", "Auto (recommended)"));
+        renderBox.Items.Add(L.T("强制硬件", "Force hardware"));
+        renderBox.Items.Add(L.T("强制软件", "Force software"));
+        renderBox.SelectedIndex = Math.Max(0, Array.IndexOf(renderKeys, Config.RenderMode));
+        renderBox.SelectionChanged += (_, _) =>
+        {
+            if (renderBox.SelectedIndex < 0) return;
+            Config.RenderMode = renderKeys[renderBox.SelectedIndex];
+            Config.Save();
+        };
+        trouble.Children.Add(Row(L.T("渲染方式", "Rendering"), renderBox,
+            L.T("自动 = 检测到老款 Intel 核显（HD/UHD 6xx、Iris Plus 等）时改用软件渲染——这批核显的驱动会把壁纸亮部烧成噪点/白块（issue #1），其余机器保持硬件渲染。\n壁纸仍异常可选「强制软件」。重启 MacDesk 生效。",
+                "Auto = switches to software rendering when a legacy Intel iGPU is detected (HD/UHD 6xx, Iris Plus, etc. — their drivers burn wallpaper highlights into speckles/white, issue #1); all other machines stay hardware-rendered.\nPick \"Force software\" if the wallpaper still looks wrong. Takes effect after restarting MacDesk.")));
+        trouble.Children.Add(Separator());
+        trouble.Children.Add(Row(L.T("菜单在主进程弹出", "Menus in Main Process"), Toggle(Config.MenuInMainProcess,
+            v => { Config.MenuInMainProcess = v; Config.Save(); }),
+            L.T("推荐开启；关闭需重启 MacDesk 生效", "Recommended on; turning off takes effect after restarting MacDesk")));
+        p.Children.Add(Card(trouble));
+
+        p.Children.Add(Section(L.T("调试", "Debug")));
         var advanced = new StackPanel();
         advanced.Children.Add(Row(L.T("显示原生桌面图标", "Show Native Desktop Icons"), Toggle(Interop.DesktopLayer.NativeIconsVisible,
             v => Interop.DesktopLayer.SetNativeIconsVisible(v)),
             L.T("调试用：原生图标在 MacDesk 层下面，当前不透明背景下开了也看不见", "Debug: native icons sit under the MacDesk layer and stay hidden behind the opaque background")));
-        advanced.Children.Add(Separator());
+        p.Children.Add(Card(advanced));
+
+        p.Children.Add(Section(L.T("退出", "Quit")));
+        var quitSec = new StackPanel();
         var quitBtn = new Button
         {
             Content = L.T("退出 MacDesk", "Quit MacDesk"),
@@ -646,8 +722,8 @@ internal sealed class SettingsWindow : Window
             Foreground = DangerFg,
         };
         quitBtn.Click += (_, _) => App.BeginUserQuit();
-        advanced.Children.Add(Row(L.T("退出", "Quit"), quitBtn, L.T("还原原生桌面图标并停止 MacDesk（快捷键 Ctrl+Alt+Q）", "Restore the native desktop icons and stop MacDesk (hotkey Ctrl+Alt+Q)")));
-        p.Children.Add(Card(advanced));
+        quitSec.Children.Add(Row(L.T("退出", "Quit"), quitBtn, L.T("还原原生桌面图标并停止 MacDesk（快捷键 Ctrl+Alt+Q）", "Restore the native desktop icons and stop MacDesk (hotkey Ctrl+Alt+Q)")));
+        p.Children.Add(Card(quitSec));
 
         return p;
     }
@@ -658,6 +734,14 @@ internal sealed class SettingsWindow : Window
     {
         var p = Page(L.T("外观", "Appearance"));
 
+        // 页内按使用频率排：图标大小是本窗口里被反复动得最多的设置，置顶
+        p.Children.Add(Section(L.T("图标", "Icons")));
+        var sizeSec = new StackPanel();
+        sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
+            L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
+        p.Children.Add(Card(sizeSec));
+
+        p.Children.Add(Section(L.T("颜色", "Color")));
         var sec = new StackPanel();
         var palette = new StackPanel { Orientation = Orientation.Horizontal };
         void Rebuild()
@@ -692,31 +776,38 @@ internal sealed class SettingsWindow : Window
         sec.Children.Add(Row(L.T("强调色", "Accent Color"), palette, L.T("选中标签与框选的颜色，即时生效", "Color of selected labels and the marquee; applies immediately")));
         p.Children.Add(Card(sec));
 
-        var sizeSec = new StackPanel();
-        sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
-            L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
-        p.Children.Add(Card(sizeSec));
-
+        p.Children.Add(Section(L.T("壁纸", "Wallpaper")));
         var wall = new StackPanel();
+        // 两个"使用动态壁纸时…"从属开关只在主开关开启时有意义：缩进 + 联动置灰表达依赖关系
+        //（禁用的 UIElement 收不到鼠标事件，自绘 Toggle 不用自己判 IsEnabled）
+        var wallDeps = new StackPanel
+        {
+            Margin = new Thickness(12, 0, 0, 0),
+            IsEnabled = Config.DynamicWallpaper,
+            Opacity = Config.DynamicWallpaper ? 1 : 0.45,
+        };
         wall.Children.Add(Row(L.T("动态壁纸（Wallpaper Engine）", "Live Wallpaper (Wallpaper Engine)"), Toggle(Config.DynamicWallpaper, v =>
         {
             Config.DynamicWallpaper = v;
             Config.Save();
             foreach (var w in Desktop.Windows) w.ApplyWallpaperMode();
+            wallDeps.IsEnabled = v;
+            wallDeps.Opacity = v ? 1 : 0.45;
         }), L.T("检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。", "When Wallpaper Engine is detected, its live wallpaper is adopted into the MacDesk desktop layer (native rendering, zero extra cost).\nWithout Wallpaper Engine running this has no effect; the system static wallpaper is shown.")));
         wall.Children.Add(Separator());
-        wall.Children.Add(Row(L.T("使用动态壁纸时禁用图标阴影", "Disable Icon Shadows with Live Wallpaper"), Toggle(Config.DynamicNoShadows, v =>
+        wallDeps.Children.Add(Row(L.T("使用动态壁纸时禁用图标阴影", "Disable Icon Shadows with Live Wallpaper"), Toggle(Config.DynamicNoShadows, v =>
         {
             Config.DynamicNoShadows = v;
             Config.Save();
             foreach (var w in Desktop.Windows) w.RefreshDynamicPerf();
         }), L.T("动态壁纸下图标层改走软件渲染，阴影是性能大头。推荐低配机保持开启；显卡强可关闭保留阴影", "With live wallpaper the icon layer is software-rendered and shadows dominate the frame cost. Keep on for low-end machines; turn off to keep shadows on strong GPUs")));
-        wall.Children.Add(Separator());
-        wall.Children.Add(Row(L.T("使用动态壁纸时禁用动画", "Disable Animations with Live Wallpaper"), Toggle(Config.DynamicNoAnimations, v =>
+        wallDeps.Children.Add(Separator());
+        wallDeps.Children.Add(Row(L.T("使用动态壁纸时禁用动画", "Disable Animations with Live Wallpaper"), Toggle(Config.DynamicNoAnimations, v =>
         {
             Config.DynamicNoAnimations = v;
             Config.Save();
         }), L.T("展开叠放、整理等布局动画改为瞬移，低配机的帧率保底选项", "Layout animations (stack expand, clean up) become instant moves - a frame-rate floor for low-end machines")));
+        wall.Children.Add(wallDeps);
         wall.Children.Add(Separator());
         wall.Children.Add(Row(L.T("静态壁纸", "Static Wallpaper"), new TextBlock { Text = L.T("跟随系统", "Follows System"), Foreground = Subtle, FontSize = 13 },
             L.T("在 Windows 个性化里换壁纸，MacDesk 会自动跟随（含每屏不同壁纸与适配模式）", "Change wallpaper in Windows Personalization; MacDesk follows automatically (per-monitor wallpapers and fit modes included)")));
