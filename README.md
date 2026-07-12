@@ -151,7 +151,7 @@ MacDesk.exe --hide-native   # also hide the native Explorer icon list (restored 
 MacDesk.exe --quit          # gracefully quit a running instance (and its watchdog)
 ```
 
-To quit: the **Quit** button in Settings → General, **Ctrl+Alt+Q**, or
+To quit: the **Quit** button in Settings → Advanced, **Ctrl+Alt+Q**, or
 `--quit`. Because MacDesk is meant to be always-on, force-killing the main
 process makes the watchdog relaunch it — use one of the above to stop it fully.
 
