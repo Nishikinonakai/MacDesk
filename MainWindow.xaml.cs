@@ -3432,42 +3432,14 @@ public partial class MainWindow : Window
                 return;
             }
 
-            int pos = info?.Position ?? Interop.DesktopWallpaper.PosFill;
-
             var bmp = new BitmapImage();
             bmp.BeginInit();
             bmp.UriSource = new Uri(path);
             bmp.CacheOption = BitmapCacheOption.OnLoad; // 读完即关文件，壁纸文件不被锁
-            // 缩放类模式预解码到本屏物理尺寸，运行时缩放≈1:1（issue #1：Intel UHD 630 的
-            // 硬件合成给"图比屏大"的 HighQuality 降采样路径撒 CMYW 噪点——反馈者 4K 必应图
-            // 配 1440p 屏中招，等比时免疫；预缩掉运行时降采样，顺带省内存）。只缩不放；
-            // Center/Tile 要原始尺寸、Span 先按虚拟桌面几何裁剪，都不预缩。
-            bool prescaled = false;
-            var (iw, ih) = PeekPixelSize(path);
-            double tw = Monitor.Physical.Width, th = Monitor.Physical.Height;
-            if (iw > 0 && ih > 0 && tw > 0 && th > 0)
-            {
-                if (pos == Interop.DesktopWallpaper.PosStretch && iw >= tw && ih >= th)
-                {
-                    bmp.DecodePixelWidth = (int)tw; // 两轴都够大才预缩：解码期直接非等比拉到屏幕
-                    bmp.DecodePixelHeight = (int)th;
-                    prescaled = true;
-                }
-                else if (pos is Interop.DesktopWallpaper.PosFill or Interop.DesktopWallpaper.PosFit)
-                {
-                    double k = pos == Interop.DesktopWallpaper.PosFit
-                        ? Math.Min(tw / iw, th / ih)   // FIT：contain 几何
-                        : Math.Max(tw / iw, th / ih);  // FILL：cover 几何（溢出轴在 1:1 下被裁）
-                    if (k < 1)
-                    {
-                        bmp.DecodePixelWidth = Math.Max(1, (int)Math.Round(iw * k));
-                        prescaled = true;
-                    }
-                }
-            }
             bmp.EndInit();
             bmp.Freeze();
 
+            int pos = info?.Position ?? Interop.DesktopWallpaper.PosFill;
             if (pos == Interop.DesktopWallpaper.PosTile)
             {
                 RemoveWallpaperImage();
@@ -3497,14 +3469,12 @@ public partial class MainWindow : Window
             if (_wallpaper == null)
             {
                 _wallpaper = new Image { IsHitTestVisible = false, SnapsToDevicePixels = true };
+                RenderOptions.SetBitmapScalingMode(_wallpaper, BitmapScalingMode.HighQuality);
                 RootGrid.Children.Insert(0, _wallpaper); // IconCanvas 之下
             }
-            // 预缩后运行时≈1:1，Linear 单 pass 足够且彻底绕开 Fant 多 pass（见上）；未预缩保持 HighQuality
-            RenderOptions.SetBitmapScalingMode(_wallpaper, prescaled ? BitmapScalingMode.Linear : BitmapScalingMode.HighQuality);
             _wallpaper.Source = src;
             _wallpaper.Stretch = stretch;
-            Log.Write($"[{MonKey}] wallpaper: {Path.GetFileName(path)} pos={pos}" +
-                (prescaled ? $" prescale {iw}x{ih}->{src.PixelWidth}x{src.PixelHeight}" : ""));
+            Log.Write($"[{MonKey}] wallpaper: {Path.GetFileName(path)} pos={pos}");
         }
         catch (Exception ex) { Log.Write("wallpaper apply failed: " + ex.Message); }
     }
@@ -3514,18 +3484,6 @@ public partial class MainWindow : Window
         if (_wallpaper == null) return;
         RootGrid.Children.Remove(_wallpaper);
         _wallpaper = null;
-    }
-
-    /// <summary>只读文件头取像素尺寸（不解码像素，预解码算目标尺寸用）。失败返回 (0,0) = 不预缩。</summary>
-    private static (int W, int H) PeekPixelSize(string path)
-    {
-        try
-        {
-            using var fs = File.OpenRead(path);
-            var frame = BitmapDecoder.Create(fs, BitmapCreateOptions.DelayCreation, BitmapCacheOption.None).Frames[0];
-            return (frame.PixelWidth, frame.PixelHeight);
-        }
-        catch { return (0, 0); }
     }
 
     private static Color RegistryBackColor()

@@ -66,6 +66,9 @@ public partial class App : Application
     /// <summary>启动时的持久模式开关（自我重启/开机自启复现用户选的模式；排除 --quit 等一次性动作）。</summary>
     public static string[] LaunchModeArgs { get; private set; } = Array.Empty<string>();
 
+    /// <summary>软渲原因（null = 硬件渲染）：--soft / 设置强制 / 自动检测老 Intel 核显，日志用。</summary>
+    private static string? _softRenderReason;
+
     private static string[] ExtractModeArgs(string[] args)
     {
         var mode = new List<string>();
@@ -92,7 +95,13 @@ public partial class App : Application
             HandoffSeed = Services.Handoff.TryLoadSeed();
         }
         LaunchModeArgs = ExtractModeArgs(e.Args);
-        if (e.Args.Contains("--soft") || cfg.SoftwareRender) // 设置里的持久开关与 --soft 等效（issue #1 核显合成缺陷的逃生口）
+        // issue #1：老世代 Intel 核显的原生 D3D9 驱动烧壁纸亮部（1:1 零缩放照烧、最新驱动无效），
+        // 「自动」检测到即整进程软渲绕开（见 Gpu.cs）；--soft / 设置「强制软件」仍是手动兜底。
+        _softRenderReason = e.Args.Contains("--soft") ? "--soft"
+            : cfg.RenderMode == "software" ? "settings: force software"
+            : cfg.RenderMode != "hardware" && Services.Gpu.HasLegacyIntelAdapter(out var legacy) ? $"auto: legacy Intel iGPU \"{legacy}\""
+            : null;
+        if (_softRenderReason != null)
             System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
 
         // 开机自启开关（一次性动作，设置完即退）：可带模式开关，如 --enable-autostart --hide-native
@@ -190,9 +199,10 @@ public partial class App : Application
         }
 
         Services.Log.Write($"startup args=[{string.Join(" ", e.Args)}]");
-        Services.Log.Write(System.Windows.Media.RenderOptions.ProcessRenderMode == System.Windows.Interop.RenderMode.SoftwareOnly
-            ? "render: software-only (--soft / settings SoftwareRender)"
-            : "render: hardware (default)"); // 双态正向记录：排查渲染类 issue 时先看这行，别拿"没日志"当硬件模式的证据
+        Services.Log.Write($"gpu: {Services.Gpu.ActiveAdapterSummary()}");
+        Services.Log.Write(_softRenderReason != null
+            ? $"render: software-only ({_softRenderReason})"
+            : "render: hardware (default)"); // 双态正向记录：排查渲染类 issue 时先看 gpu/render 两行，别拿"没日志"当硬件模式的证据
         AppDomain.CurrentDomain.UnhandledException += (_, ue) =>
             Services.Log.Write($"FATAL: {ue.ExceptionObject}");
         DispatcherUnhandledException += (_, de) =>
