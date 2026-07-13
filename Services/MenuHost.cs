@@ -23,6 +23,12 @@ namespace MacDesk.Services;
 /// 旧路径（settings 关掉 v2 时）：host 内 TrackPopupMenu + settle-wait + 瞬灭重试，
 /// 协议同旧版（管道 MacDesk.MenuHost，每请求一次连接，US 分隔，无应答）。
 /// 切换需重启 MacDesk（host 按启动时的设置选一种循环）。
+///
+/// 菜单数据树不再缓存（PR #6 被驳回——缓存的 IContextMenu 绑定的是建缓存时的文件，
+/// 命中后 InvokeCommand 会作用于错误文件，且同扩展名文件的菜单文本因文件名嵌入而不同）。
+/// 改为纯预热：启动后对每种安全文件类型跑一次 QueryContextMenu（用真实文件），
+/// 不缓存结果，只利用这次调用来预热 shell 扩展内部的 DLL 缓存，
+/// 用户真正右键时扩展已是热的，延迟自然降低。
 /// </summary>
 internal static class MenuHost
 {
@@ -326,7 +332,9 @@ internal static class MenuHost
         // 客户端误判 host 死了把它杀掉重拉——旧版右键时灵时不灵的帮凶之一）。
         // 内容：①背景菜单扩展在本进程加载（实测安全）；②对桌面上所有文件类型跑一遍
         // 牺牲进程探针（文件项扩展会 fail-fast 带走进程，不能在本进程试），
-        // 之后任何图标的首次右键都不用再付探针延迟。
+        // 之后任何图标的首次右键都不用再付探针延迟；
+        // ③对每种安全类型跑一次完整 BuildFileMenu（用真实文件），
+        // 不缓存结果，只利用这次调用来预热 shell 扩展内部的 DLL 缓存。
         var warm = new Thread(() =>
         {
             try
@@ -340,8 +348,19 @@ internal static class MenuHost
                 foreach (var entry in Directory.EnumerateFileSystemEntries(DesktopItemProvider.UserDesktop))
                     ProbeSafe(entry); // 按类型去重，每种只探一次
                 Log.Write("menu host probes done");
+
+                // ③ 预热构建：若探针崩了 _safeByKind 空/半空，ProbeSafe 退化为持锁 8s
+                var swWarm = Stopwatch.StartNew();
+                int warmed = 0;
+                foreach (var entry in Directory.EnumerateFileSystemEntries(DesktopItemProvider.UserDesktop))
+                {
+                    if (!ProbeSafe(entry)) continue;
+                    using var built = ShellContextMenu.BuildFileMenu(new[] { entry }, _ownerHwnd);
+                    if (built != null) warmed++;
+                }
+                Log.Write($"menu host: pure-prewarmed {warmed} file types in {swWarm.ElapsedMilliseconds}ms");
             }
-            catch (Exception ex) { Log.Write("menu host probe sweep failed: " + ex.Message); }
+            catch (Exception ex) { Log.Write("menu host probe/prewarm failed: " + ex.Message); }
         }) { IsBackground = true };
         warm.SetApartmentState(ApartmentState.STA);
         warm.Start();
@@ -379,6 +398,7 @@ internal static class MenuHost
                     continue;
                 }
 
+                // 每次右键全量构建（预热已暖 shell 扩展内部缓存，不再缓存菜单数据树）
                 var sw = Stopwatch.StartNew();
                 using var built = parts[0] == "bg2"
                     ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
@@ -388,10 +408,12 @@ internal static class MenuHost
                     WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "error" }));
                     continue;
                 }
-                MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0); // 根菜单的 WM_INITMENUPOPUP
+                MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0);
                 var items = MenuSnapshot.Capture(built.HMenu, built.MenuObj);
                 WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items }));
-                Log.Write($"menu host v2: captured {items.Count} top-level items in {sw.ElapsedMilliseconds}ms");
+                Log.Write($"menu host v2: captured {items.Count} items for {parts[0]} in {sw.ElapsedMilliseconds}ms");
+                var menuObj = built.MenuObj; // 保留引用：built.Dispose 只销毁 HMENU，IContextMenu 是 COM 对象仍存活
+                var swWait = Stopwatch.StartNew(); // 计命令等待+执行时间（用户交互窗口）
 
                 // 菜单在主进程开着期间保持 IContextMenu 存活；用户关菜单后收命令帧。
                 // 泵等待：上一个属性页/异步动词的编组回调不因本次等待而停摆
@@ -399,9 +421,10 @@ internal static class MenuHost
                 int cmd = cmdBytes is { Length: 4 } ? BinaryPrimitives.ReadInt32LittleEndian(cmdBytes) : 0;
                 if (cmd is > 0 and <= 0x6FFF)
                 {
-                    ShellContextMenu.InvokeShellCmd(built.MenuObj, cmd - 1, _ownerHwnd);
+                    ShellContextMenu.InvokeShellCmd(menuObj, cmd - 1, _ownerHwnd);
                     Log.Write($"menu host v2: invoked shell cmd {cmd}");
                 }
+                Log.Write($"menu host v2: {parts[0]} request done ({swWait.ElapsedMilliseconds}ms)");
             }
             catch (Exception ex) { Log.Write("menu host v2 loop error: " + ex.Message); }
         }

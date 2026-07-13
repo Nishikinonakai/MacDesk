@@ -236,7 +236,7 @@ internal static class MenuSnapshot
 
         int deadline = Environment.TickCount + 200; // 硬上限（菜单本就有探针延迟，+≤200ms 无感）
         int idle = 0;
-        while (Environment.TickCount < deadline && idle < 2) // 连续 2 次无新图=剩下的本就无图，收手
+        while (Environment.TickCount < deadline && idle < 1) // 一轮无新图即收手（异步图标在一次泵后要么到要么永不到）
         {
             PumpFor(30);
             bool gained = false;
