@@ -112,7 +112,7 @@ internal sealed class Settings
         s.ShowRecycleBin = NativeIconShown("{645FF040-5081-101B-9F08-00AA002F954E}", defShown: true);
         s.ShowThisPC = NativeIconShown("{20D04FE0-3AEA-1069-A2D8-08002B30309D}", defShown: false);
         s.ShowUserFiles = NativeIconShown("{59031A47-3F72-44A7-89C5-5595FE6B30EE}", defShown: false);
-        s.ShowNetwork = NativeIconShown("{F02C1A0D-3E12-4590-B168-3C813C6A0D06}", defShown: false);
+        s.ShowNetwork = NativeIconShown("{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}", defShown: false);
         s.ShowControlPanel = NativeIconShown("{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}", defShown: false);
         try
         {

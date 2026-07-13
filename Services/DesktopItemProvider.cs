@@ -35,7 +35,7 @@ internal sealed class DesktopItemProvider : IDisposable
     public const string RecycleBin = "::{645FF040-5081-101B-9F08-00AA002F954E}";
     public const string ThisPC = "::{20D04FE0-3AEA-1069-A2D8-08002B30309D}";
     public const string UserFiles = "::{59031A47-3F72-44A7-89C5-5595FE6B30EE}";
-    public const string Network = "::{F02C1A0D-3E12-4590-B168-3C813C6A0D06}";
+    public const string Network = "::{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}";
     public const string ControlPanel = "::{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}";
 
     public IReadOnlyList<DesktopEntry> Enumerate()
