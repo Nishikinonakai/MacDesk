@@ -3595,6 +3595,10 @@ public partial class MainWindow : Window
     private bool _pumpOn;
     private DateTime _pumpUntil;
     private DateTime _lastFramePush = DateTime.MinValue;
+    private DateTime _lastRenderingTick = DateTime.MinValue; // 泵饿死检测：Rendering 事件最后一次 fire
+    private bool _starveLogged;
+    private double _vsyncMs = 1000.0 / 60;   // 本显示器刷新间隔（进动态模式时现查），节流下限
+    private bool _wakeFullFrame;             // LayoutUpdated 唤醒帧：下一帧全量渲染一次（替代旧 250ms 全帧窗）
     private double _frameCostMs = 5; // EMA；自适应节流，渲染贵时自动降帧率
     private double _dpiK = 1.0;      // 本显示器物理 DPI 倍率（CoverAndSync 现查）
     private int _burstFrames;        // 帧泵诊断：本轮 burst 推了几帧
@@ -3707,6 +3711,9 @@ public partial class MainWindow : Window
                 return;
             }
             _presenter = p;
+            int hz = Monitors.RefreshRate(Monitor.Device);
+            _vsyncMs = 1000.0 / Math.Clamp(hz, 30, 480);
+            Log.Write($"[{MonKey}] refresh {hz}Hz -> pump floor {_vsyncMs:F1}ms");
         }
 
         (_weOriginalParent, _weOriginalEx) = WallpaperEngine.Adopt(we, _forceRect);
@@ -3739,6 +3746,14 @@ public partial class MainWindow : Window
                     return;
                 }
                 AssertDynamicZOrder(); // 廉价 Win32 调用，每拍都做
+                // 泵饿死检测（诊断）：泵订阅着但 Rendering 事件停发（WPF MediaContext 在本进程
+                // 无可见窗口时停节拍——主窗被 WE 盖死、presenter 是纯 Win32 窗，WPF 不知道）
+                if (_pumpOn && !_starveLogged && (DateTime.UtcNow - _lastRenderingTick).TotalMilliseconds > 1500)
+                {
+                    _starveLogged = true;
+                    Log.Write($"[{MonKey}] pump STARVED: subscribed but no rendering tick for " +
+                        $"{(DateTime.UtcNow - _lastRenderingTick).TotalSeconds:F0}s (pumpUntil {(_pumpUntil - DateTime.UtcNow).TotalMilliseconds:F0}ms away)");
+                }
                 // 兜底帧（漏埋点的渲染型变化）：全帧 RTB 在 4K 上一帧 ~0.2s CPU（软件光栅化
                 // 全树 DropShadow，真机实测），交互路径有埋点+LayoutUpdated 唤醒兜着——
                 // 只在长静止（30s 无任何推帧）时补一帧，静止 CPU 压到 ~0%
@@ -3806,10 +3821,12 @@ public partial class MainWindow : Window
         int pw = Monitor.Physical.Width, ph = Monitor.Physical.Height;
         if (pw < 1 || ph < 1 || RootGrid.ActualWidth < 1) return;
 
-        // 脏区太大时小 RTB 无优势（还多一次拷贝），退回全帧；_frameBitmap 为空或尺寸不符
-        // 说明本尺寸还没推过全帧（patch 会叠在清零的新 DIB 上），必须全帧起步
+        // 脏区帧成本 ∝ 面积、全帧还要多付整屏光栅化——阈值放到 0.85 屏（旧 0.5 让框选/
+        // 堆动画这类大区域交互整段掉进全帧路径，1080p 实测 9fps；0.85 屏的 patch 仍比
+        // 全帧便宜 ~15%+一次拷贝）。_frameBitmap 为空或尺寸不符说明本尺寸还没推过全帧
+        //（patch 会叠在清零的新 DIB 上），必须全帧起步
         if (dirtyPhys is { } d0 && _frameBitmap?.PixelWidth == pw && _frameBitmap.PixelHeight == ph
-            && d0.Width * d0.Height < pw * (double)ph * 0.5)
+            && d0.Width * d0.Height < pw * (double)ph * 0.85)
         {
             int x = Math.Max(0, (int)Math.Floor(d0.X)), y = Math.Max(0, (int)Math.Floor(d0.Y));
             int w = Math.Min(pw, (int)Math.Ceiling(d0.Right)) - x, h = Math.Min(ph, (int)Math.Ceiling(d0.Bottom)) - y;
@@ -3852,10 +3869,11 @@ public partial class MainWindow : Window
         _presenter.PushFrame(_frameBitmap);
 
         double cost = (DateTime.UtcNow - t0).TotalMilliseconds;
-        _frameCostMs = cost; // 直赋（见 patch 分支注释）：贵的全帧后歇 2×cost 保护 UI 线程，
+        _frameCostMs = cost; // 直赋（见 patch 分支注释）：贵的全帧后歇 1.5×cost 保护 UI 线程，
                              // 下一帧若是便宜的脏区帧，gap 立即回到高频
         _burstFrames++;
         _burstCostMs += cost;
+        if (cost > 120) Log.Write($"[{MonKey}] slow full frame {cost:F0}ms ({pw}x{ph})"); // 高分辨率/阴影场景的观察哨
     }
 
     // ── 脏区跟踪（P0-B）：谁在动/变，只重画谁的包围盒 ──────────────────
@@ -3930,15 +3948,24 @@ public partial class MainWindow : Window
     /// <summary>LayoutUpdated 只当"从静止唤醒"的传感器：泵活跃期间它每帧都 fire（WPF 在
     /// Rendering 订阅期间每帧跑布局检查，与真实变化无关）——无脑 poke 会自激成永动机
     ///（真机实锤：静止 CPU 挂在 3%+）。泵停后 WPF 停渲染，此事件只在真变化时来。
-    /// 动画的持续续命由 MoveElement/FadeTo 等显式埋点负责。</summary>
+    /// 动画的持续续命由 MoveElement/FadeTo 等显式埋点负责。
+    /// 唤醒 = **一帧全量** + 250ms 泵窗：旧版给 250ms 全帧窗，交互开场必吃 2-4 拍
+    /// 50-80ms 的全帧连拍（1080p 真机实测），开场就掉帧；改成首帧全量把漏埋点的布局
+    /// 变化一次画全，后续帧立即回到脏区裁剪高频路径。</summary>
     private void OnLayoutUpdatedPoke(object? s, EventArgs e)
     {
-        if (!_pumpOn) PokeFrames(250);
+        if (!_pumpOn)
+        {
+            _wakeFullFrame = true;
+            PokeFrames(250, fullDirty: false);
+        }
     }
 
     private void OnPumpFrame(object? s, EventArgs e)
     {
         var now = DateTime.UtcNow;
+        _lastRenderingTick = now;
+        if (_starveLogged) { _starveLogged = false; Log.Write($"[{MonKey}] pump recovered: rendering ticks resumed"); }
         if (now > _pumpUntil)
         {
             CompositionTarget.Rendering -= OnPumpFrame;
@@ -3950,15 +3977,18 @@ public partial class MainWindow : Window
             _burstCostMs = 0;
             return;
         }
-        // 自适应节流：渲染成本的 2 倍为间隔下限（帧贵自动降帧率，渲染占 UI 线程 ≤50%），
-        // 最快 ~60fps。**不设上限**——上限会在帧成本高时变成"强制高频渲染"烤死 UI 线程
-        //（4K avg 1031ms/帧 × 66ms 上限 = 交互全糊的元凶，真机实锤）。脏区帧便宜，
-        // _frameCostMs 的 EMA 会自动落到 patch 成本，动画期逼近 60fps（P0-B 的目标）。
-        double minGap = Math.Max(15, _frameCostMs * 2);
+        // 自适应节流：间隔下限 = max(vsync, 帧成本×1.5)。vsync 垫底 = 高刷屏不再被旧的
+        // 15ms 常量卡死在 ~60fps（用户反馈"以为没适配高刷"——正中）；成本项保证渲染占
+        // UI 线程 ≤2/3，帧贵自动降频。**不设上限**——上限会在帧成本高时变成"强制高频渲染"
+        // 烤死 UI 线程（4K avg 1031ms/帧 × 66ms 上限 = 交互全糊的元凶，真机实锤）。
+        // 脏区帧便宜，_frameCostMs 直赋后 gap 立即回到 vsync 满速（P0-B 的目标）。
+        double minGap = Math.Max(_vsyncMs, _frameCostMs * 1.5);
         if ((now - _lastFramePush).TotalMilliseconds < minGap) return;
+        bool wake = _wakeFullFrame;
+        _wakeFullFrame = false;
+        var dirty = wake ? null : ComputeDirtyPhysical(now);
+        if (dirty == Rect.Empty) return; // 在册元素全隐身且无遗留：本帧跳过（不算推帧，兜底帧照常计时）
         _lastFramePush = now;
-        var dirty = ComputeDirtyPhysical(now);
-        if (dirty == Rect.Empty) return; // 在册元素全隐身且无遗留：本帧跳过
         RenderFrame(dirty);
     }
 
@@ -3979,7 +4009,13 @@ public partial class MainWindow : Window
         _renameCaretPump.Start();
     }
 
-    private void RenameCaretTick(object? s, EventArgs e) => PokeFrames(400);
+    // 光标闪烁只弄脏重命名框（旧版 PokeFrames 走 400ms 全帧窗 + 300ms tick 无限续 =
+    // 重命名全程全帧连拍，1080p 每拍 50-80ms 烤 UI 线程）
+    private void RenameCaretTick(object? s, EventArgs e)
+    {
+        if (_renameBox != null) PokeElement(_renameBox, 400);
+        else PokeFrames(400);
+    }
 
     private void StopRenameCaretPump() => _renameCaretPump?.Stop();
 }

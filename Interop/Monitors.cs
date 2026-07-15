@@ -48,6 +48,38 @@ internal static class Monitors
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct DEVMODE
+    {
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+        public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+        public uint dmFields;
+        public int dmPositionX, dmPositionY;
+        public uint dmDisplayOrientation, dmDisplayFixedOutput;
+        public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+        public ushort dmLogPixels;
+        public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+        public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool EnumDisplaySettingsW(string device, int mode, ref DEVMODE dm);
+
+    /// <summary>显示器当前刷新率（Hz）。查不到 / 报 0-1（硬件默认）时按 60 处理。
+    /// 动态壁纸帧泵用它做节流下限（高刷屏别被 60fps 卡死——用户反馈驱动）。</summary>
+    public static int RefreshRate(string device)
+    {
+        try
+        {
+            var dm = new DEVMODE { dmSize = (ushort)Marshal.SizeOf<DEVMODE>() };
+            if (EnumDisplaySettingsW(device, -1 /* ENUM_CURRENT_SETTINGS */, ref dm) && dm.dmDisplayFrequency > 1)
+                return (int)dm.dmDisplayFrequency;
+        }
+        catch { }
+        return 60;
+    }
+
     /// <summary>本窗口所在显示器的工作区四边内缩（物理 px）：rcWork 相对 rcMonitor。
     /// 任务栏的所有形态——小图标/隐藏/自动隐藏/四边停靠——全被这一个矩形描述，
     /// 布局按它避让，不猜任务栏多高。现查不缓存：任务栏挪位/改高不触发显示器事件。</summary>

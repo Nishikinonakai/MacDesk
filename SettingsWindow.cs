@@ -800,7 +800,7 @@ internal sealed class SettingsWindow : Window
             Config.DynamicNoShadows = v;
             Config.Save();
             foreach (var w in Desktop.Windows) w.RefreshDynamicPerf();
-        }), L.T("动态壁纸下图标层改走软件渲染，阴影是性能大头。推荐低配机保持开启；显卡强可关闭保留阴影", "With live wallpaper the icon layer is software-rendered and shadows dominate the frame cost. Keep on for low-end machines; turn off to keep shadows on strong GPUs")));
+        }), L.T("动态壁纸下图标层由 CPU 软件渲染，阴影是最大开销——与显卡强弱无关，分辨率越高越贵。桌面交互卡顿时请保持开启", "With live wallpaper the icon layer is CPU-rendered; shadows dominate the frame cost regardless of GPU power, and higher resolutions cost more. Keep this on if desktop interactions stutter")));
         wallDeps.Children.Add(Separator());
         wallDeps.Children.Add(Row(L.T("使用动态壁纸时禁用动画", "Disable Animations with Live Wallpaper"), Toggle(Config.DynamicNoAnimations, v =>
         {
