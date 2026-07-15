@@ -3466,7 +3466,7 @@ public partial class MainWindow : Window
 
     internal void ApplyDesktopBackground()
     {
-        if (_presenter != null) return; // 透传态：底就是真桌面，镜像/底色都不许画
+        if (_presenter != null || _transparentOn) return; // 动态/透明直通态：底就是真桌面，镜像/底色都不许画
         try
         {
             var info = Interop.DesktopWallpaper.ForMonitor(Monitor.Physical);
@@ -3689,6 +3689,12 @@ public partial class MainWindow : Window
 
     private void EnterDynamic(IntPtr we)
     {
+        if (Config.DynamicTransparent) // spike：透明直通路径
+        {
+            if (_presenter != null || _weWindow != IntPtr.Zero) ExitDynamic(release: true); // 从收编态切换：先还原 WE
+            EnterTransparentDynamic();
+            return;
+        }
         if (_weWindow == we && _presenter != null)
         {
             AssertDynamicZOrder(); // 已在动态模式：只复核 z 序与矩形
@@ -3772,6 +3778,49 @@ public partial class MainWindow : Window
         Log.Write($"[{MonKey}] dynamic wallpaper ON we=0x{we:X} ({WallpaperEngine.Describe(we)}) presenter=0x{_presenter!.Hwnd:X} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
     }
 
+    // ── 透明直通（spike，settings.json "DynamicTransparent": true）────────────
+    // 不收编 WE、不建 presenter：WE 留在 WorkerW 原生位置（DefView 完全透传其下的
+    // WorkerW——2026-07-07 透传证伪实验的正面收获），把 WPF 窗口的表面清除色设
+    // Transparent，背景 alpha=0 的区域由 DWM 直接透出 WE。图标层保持 GPU 硬件渲染，
+    // 帧率与静态模式一致。依据：P0-A"打洞"bug 实锤非分层子窗的表面 alpha 参与 DWM
+    // 合成（Opacity 中间层把 alpha 打出洞时透出的正是身后壁纸）——当年"透传证伪"
+    // 只证了 WS_EX_LAYERED（GDI layered）不可行，没试过这条。
+    // 硬件渲染路径全部自然复用镜像模式逻辑（_presenter==null：帧泵不跑、Effect 保留、
+    // BitmapCache 挂上防打洞——透明模式下打洞透出的就是壁纸本身，挂不挂都对，挂着更省）。
+
+    private bool _transparentOn;
+
+    private void EnterTransparentDynamic()
+    {
+        if (_transparentOn) return;
+        _transparentOn = true;
+        RemoveWallpaperImage(); // 撤镜像，露出透明背景
+        _wallpaperSig = "";
+        RootGrid.Background = Brushes.Transparent;
+        Background = Brushes.Transparent;
+        if (PresentationSource.FromVisual(this) is HwndSource hs && hs.CompositionTarget != null)
+            hs.CompositionTarget.BackgroundColor = Colors.Transparent; // WPF 表面清除色——spike 的核心
+        if (DesktopLayer.NativeIconsVisible)
+        {
+            DesktopLayer.SetNativeIconsVisible(false);
+            Log.Write($"[{MonKey}] hid native icons for transparent dynamic");
+        }
+        ApplyCacheModeAll();
+        Log.Write($"[{MonKey}] transparent dynamic ON (surface clear=Transparent, WE stays in WorkerW)");
+    }
+
+    private void ExitTransparentDynamic()
+    {
+        if (!_transparentOn) return;
+        _transparentOn = false;
+        if (PresentationSource.FromVisual(this) is HwndSource hs && hs.CompositionTarget != null)
+            hs.CompositionTarget.BackgroundColor = Colors.Black; // WPF 默认清除色
+        _wallpaperSig = "";
+        ApplyDesktopBackground(); // 回镜像（含 RootGrid 底色恢复）
+        ApplyCacheModeAll();
+        Log.Write($"[{MonKey}] transparent dynamic OFF");
+    }
+
     /// <summary>三层 z 序（presenter 顶、WE 中、WPF 底）+ 矩形复核。收编别家窗口，
     /// 谁都可能动它，心跳廉价重申一次。</summary>
     private void AssertDynamicZOrder()
@@ -3786,6 +3835,7 @@ public partial class MainWindow : Window
 
     private void ExitDynamic(bool release)
     {
+        ExitTransparentDynamic(); // 透明直通模式的退出（spike；与收编模式互斥，各自幂等）
         if (_presenter == null && _weWindow == IntPtr.Zero) return;
         RootGrid.LayoutUpdated -= OnLayoutUpdatedPoke;
         _frameHeartbeat?.Stop();

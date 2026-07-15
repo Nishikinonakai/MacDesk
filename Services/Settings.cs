@@ -48,6 +48,12 @@ internal sealed class Settings
     /// 默认关（动画是 MacDesk 的灵魂，帧率能接受就留着）。</summary>
     public bool DynamicNoAnimations { get; set; }
 
+    /// <summary>【spike】动态壁纸透明直通：不收编 WE、不建 presenter，把 WPF 窗口表面清除色
+    /// 设 Transparent 直接透出下层 WorkerW 里的 WE——图标层保持 GPU 硬件渲染（帧率与静态
+    /// 模式一致）。依据 = P0-A"打洞"bug 反证 DefView 子窗表面 alpha 参与 DWM 合成。
+    /// 真机验证可行后转正并做成默认路径；不可行则删。settings.json 手写开关，不进 UI。</summary>
+    public bool DynamicTransparent { get; set; }
+
     /// <summary>自启动用计划任务（onlogon 即启）替代 Run 键，绕过 Windows 对启动项的
     /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。</summary>
     public bool FastAutostart { get; set; }
@@ -131,6 +137,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("UseStacks", out var us)) s.UseStacks = us.GetBoolean();
                 if (doc.RootElement.TryGetProperty("DynamicWallpaper", out var dw)) s.DynamicWallpaper = dw.GetBoolean();
                 if (doc.RootElement.TryGetProperty("DynamicNoShadows", out var ns)) s.DynamicNoShadows = ns.GetBoolean();
+                if (doc.RootElement.TryGetProperty("DynamicTransparent", out var dt)) s.DynamicTransparent = dt.GetBoolean();
                 if (doc.RootElement.TryGetProperty("DynamicNoAnimations", out var na)) s.DynamicNoAnimations = na.GetBoolean();
                 if (doc.RootElement.TryGetProperty("FastAutostart", out var fa)) s.FastAutostart = fa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
@@ -166,7 +173,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
