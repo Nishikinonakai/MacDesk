@@ -2630,12 +2630,14 @@ public partial class MainWindow : Window
         // 输入收件窗——Web（CEF）壁纸是 Chrome_RenderWidgetHostHWND 叶子（发宿主窗无效，
         // 真机实锤），场景型退回本窗。先补一发 MOVE 让 Chromium 的命中状态就位，再 DOWN/UP。
         // WE 原生路径靠自家鼠标钩子喂 click，我们的输入层挡在上面时钩子不喂，只能自己转发。
-        if (_bandActive && _weWindow != IntPtr.Zero && Native.IsWindow(_weWindow))
+        // 收编模式用 _weWindow、透明直通用 _transparentWe——两模式互斥，取非零的那个。
+        IntPtr weWin = _weWindow != IntPtr.Zero ? _weWindow : _transparentWe;
+        if (_bandActive && weWin != IntPtr.Zero && Native.IsWindow(weWin))
         {
             var p = e.GetPosition(IconCanvas);
             if (Math.Abs(p.X - _bandOrigin.X) < 4 && Math.Abs(p.Y - _bandOrigin.Y) < 4)
             {
-                IntPtr sink = WallpaperEngine.FindInputSink(_weWindow);
+                IntPtr sink = WallpaperEngine.FindInputSink(weWin);
                 var screen = RootGrid.PointToScreen(e.GetPosition(RootGrid)); // 物理 px
                 var pt = new Native.POINT { X = (int)screen.X, Y = (int)screen.Y };
                 Native.ScreenToClient(sink, ref pt);
@@ -3630,9 +3632,11 @@ public partial class MainWindow : Window
         el.CacheMode = _presenter == null ? new BitmapCache { RenderAtScale = _dpiK } : null;
     }
 
-    /// <summary>动态壁纸 + 机主勾了"禁用动画" = 布局动画全部瞬移（低配帧率保底）。</summary>
+    /// <summary>动态壁纸（收编或透明直通）+ 勾了"禁用动画" = 布局动画全部瞬移。
+    /// 透明模式下渲染是 GPU 满速，这纯粹是偏好开关（收编模式下兼作帧率保底）。</summary>
     private static bool AnimationsSuppressed(FrameworkElement el) =>
-        Config.DynamicNoAnimations && Window.GetWindow(el) is MainWindow { _presenter: not null };
+        Config.DynamicNoAnimations && Window.GetWindow(el) is MainWindow w
+            && (w._presenter != null || w._transparentOn);
 
     /// <summary>设置里切换性能项（禁用阴影）后 live 重应用。</summary>
     internal void RefreshDynamicPerf()
@@ -3689,10 +3693,10 @@ public partial class MainWindow : Window
 
     private void EnterDynamic(IntPtr we)
     {
-        if (Config.DynamicTransparent) // spike：透明直通路径
+        if (Config.DynamicTransparent) // 透明直通（默认路径）
         {
             if (_presenter != null || _weWindow != IntPtr.Zero) ExitDynamic(release: true); // 从收编态切换：先还原 WE
-            EnterTransparentDynamic();
+            EnterTransparentDynamic(we);
             return;
         }
         if (_weWindow == we && _presenter != null)
@@ -3778,28 +3782,36 @@ public partial class MainWindow : Window
         Log.Write($"[{MonKey}] dynamic wallpaper ON we=0x{we:X} ({WallpaperEngine.Describe(we)}) presenter=0x{_presenter!.Hwnd:X} rect=({_forceRect.Left},{_forceRect.Top},{_forceRect.Width}x{_forceRect.Height})");
     }
 
-    // ── 透明直通（spike，settings.json "DynamicTransparent": true）────────────
+    // ── 透明直通（动态壁纸默认路径，2026-07-16 转正）──────────────────────
     // 不收编 WE、不建 presenter：WE 留在 WorkerW 原生位置（DefView 完全透传其下的
-    // WorkerW——2026-07-07 透传证伪实验的正面收获），把 WPF 窗口的表面清除色设
-    // Transparent，背景 alpha=0 的区域由 DWM 直接透出 WE。图标层保持 GPU 硬件渲染，
-    // 帧率与静态模式一致。依据：P0-A"打洞"bug 实锤非分层子窗的表面 alpha 参与 DWM
-    // 合成（Opacity 中间层把 alpha 打出洞时透出的正是身后壁纸）——当年"透传证伪"
-    // 只证了 WS_EX_LAYERED（GDI layered）不可行，没试过这条。
+    // WorkerW），把 WPF 窗口的表面清除色设 Transparent，背景 alpha=0 的区域由 DWM
+    // 直接透出 WE。图标层保持 GPU 硬件渲染——帧率/动画与静态模式完全同级，阴影免费。
+    // 依据：P0-A"打洞"bug 实锤非分层子窗的表面 alpha 参与 DWM 合成（Opacity 中间层把
+    // alpha 打出洞时透出的正是身后壁纸）——2026-07-07"透传证伪"只证死了 WS_EX_LAYERED
+    //（GDI layered 与 WPF D3D 重定向互斥），表面清除色这条一直是活的。
     // 硬件渲染路径全部自然复用镜像模式逻辑（_presenter==null：帧泵不跑、Effect 保留、
-    // BitmapCache 挂上防打洞——透明模式下打洞透出的就是壁纸本身，挂不挂都对，挂着更省）。
+    // BitmapCache 挂上防打洞——透明模式下打洞会露出壁纸"方形背板"，缓存照挂）。
+    // 收编模式整套保留为逃生舱：settings.json "DynamicTransparent": false 回旧路径
+    //（万一某环境表面 alpha 不被 DWM 尊重=黑底，远程一个开关救回）。
 
     private bool _transparentOn;
+    private IntPtr _transparentWe; // 透明模式下的 WE 渲染窗（点击转发用；WE 换壁纸重建时轮询刷新）
 
-    private void EnterTransparentDynamic()
+    private void EnterTransparentDynamic(IntPtr we)
     {
-        if (_transparentOn) return;
+        if (_transparentOn)
+        {
+            _transparentWe = we; // WE 换壁纸会重建渲染窗：8s 轮询带着新句柄进来，刷新转发目标
+            return;
+        }
         _transparentOn = true;
+        _transparentWe = we;
         RemoveWallpaperImage(); // 撤镜像，露出透明背景
         _wallpaperSig = "";
         RootGrid.Background = Brushes.Transparent;
         Background = Brushes.Transparent;
         if (PresentationSource.FromVisual(this) is HwndSource hs && hs.CompositionTarget != null)
-            hs.CompositionTarget.BackgroundColor = Colors.Transparent; // WPF 表面清除色——spike 的核心
+            hs.CompositionTarget.BackgroundColor = Colors.Transparent; // 表面清除色——透明直通的核心
         if (DesktopLayer.NativeIconsVisible)
         {
             DesktopLayer.SetNativeIconsVisible(false);
@@ -3813,6 +3825,7 @@ public partial class MainWindow : Window
     {
         if (!_transparentOn) return;
         _transparentOn = false;
+        _transparentWe = IntPtr.Zero;
         if (PresentationSource.FromVisual(this) is HwndSource hs && hs.CompositionTarget != null)
             hs.CompositionTarget.BackgroundColor = Colors.Black; // WPF 默认清除色
         _wallpaperSig = "";

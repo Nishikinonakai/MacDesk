@@ -48,11 +48,12 @@ internal sealed class Settings
     /// 默认关（动画是 MacDesk 的灵魂，帧率能接受就留着）。</summary>
     public bool DynamicNoAnimations { get; set; }
 
-    /// <summary>【spike】动态壁纸透明直通：不收编 WE、不建 presenter，把 WPF 窗口表面清除色
-    /// 设 Transparent 直接透出下层 WorkerW 里的 WE——图标层保持 GPU 硬件渲染（帧率与静态
-    /// 模式一致）。依据 = P0-A"打洞"bug 反证 DefView 子窗表面 alpha 参与 DWM 合成。
-    /// 真机验证可行后转正并做成默认路径；不可行则删。settings.json 手写开关，不进 UI。</summary>
-    public bool DynamicTransparent { get; set; }
+    /// <summary>动态壁纸透明直通（默认路径，2026-07-16 转正）：不收编 WE、不建 presenter，
+    /// WPF 窗口表面清除色设 Transparent 直接透出下层 WorkerW 里的 WE——图标层保持 GPU 硬件
+    /// 渲染，帧率/动画与静态模式同级、阴影免费。false = 回退旧收编模式（CPU 软渲呈现层），
+    /// 逃生舱口：万一某环境 DWM 不尊重子窗表面 alpha（症状=图标下黑底）时手工关闭救回。
+    /// 不进设置 UI。</summary>
+    public bool DynamicTransparent { get; set; } = true;
 
     /// <summary>自启动用计划任务（onlogon 即启）替代 Run 键，绕过 Windows 对启动项的
     /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。</summary>

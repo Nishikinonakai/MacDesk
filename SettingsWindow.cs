@@ -793,20 +793,13 @@ internal sealed class SettingsWindow : Window
             foreach (var w in Desktop.Windows) w.ApplyWallpaperMode();
             wallDeps.IsEnabled = v;
             wallDeps.Opacity = v ? 1 : 0.45;
-        }), L.T("检测到 Wallpaper Engine 时把动态壁纸接入 MacDesk 桌面层（原生渲染，零额外开销）。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。", "When Wallpaper Engine is detected, its live wallpaper is adopted into the MacDesk desktop layer (native rendering, zero extra cost).\nWithout Wallpaper Engine running this has no effect; the system static wallpaper is shown.")));
+        }), L.T("检测到 Wallpaper Engine 时动态壁纸直接透过 MacDesk 桌面层显示（零拷贝、零额外开销），图标渲染与静态壁纸同为 GPU 加速。\n未运行 Wallpaper Engine 时无影响，显示系统静态壁纸。", "When Wallpaper Engine is detected, its live wallpaper shows straight through the MacDesk desktop layer (zero-copy, zero extra cost); icons stay GPU-rendered exactly like static-wallpaper mode.\nWithout Wallpaper Engine running this has no effect; the system static wallpaper is shown.")));
         wall.Children.Add(Separator());
-        wallDeps.Children.Add(Row(L.T("使用动态壁纸时禁用图标阴影", "Disable Icon Shadows with Live Wallpaper"), Toggle(Config.DynamicNoShadows, v =>
-        {
-            Config.DynamicNoShadows = v;
-            Config.Save();
-            foreach (var w in Desktop.Windows) w.RefreshDynamicPerf();
-        }), L.T("动态壁纸下图标层由 CPU 软件渲染，阴影是最大开销——与显卡强弱无关，分辨率越高越贵。桌面交互卡顿时请保持开启", "With live wallpaper the icon layer is CPU-rendered; shadows dominate the frame cost regardless of GPU power, and higher resolutions cost more. Keep this on if desktop interactions stutter")));
-        wallDeps.Children.Add(Separator());
         wallDeps.Children.Add(Row(L.T("使用动态壁纸时禁用动画", "Disable Animations with Live Wallpaper"), Toggle(Config.DynamicNoAnimations, v =>
         {
             Config.DynamicNoAnimations = v;
             Config.Save();
-        }), L.T("展开叠放、整理等布局动画改为瞬移，低配机的帧率保底选项", "Layout animations (stack expand, clean up) become instant moves - a frame-rate floor for low-end machines")));
+        }), L.T("展开叠放、整理等布局动画改为瞬移（偏好选项，性能上已无必要）", "Layout animations (stack expand, clean up) become instant moves - a preference; no longer needed for performance")));
         wall.Children.Add(wallDeps);
         wall.Children.Add(Separator());
         wall.Children.Add(Row(L.T("静态壁纸", "Static Wallpaper"), new TextBlock { Text = L.T("跟随系统", "Follows System"), Foreground = Subtle, FontSize = 13 },
