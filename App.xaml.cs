@@ -323,6 +323,22 @@ public partial class App : Application
         // 菜单深色模式跟随（v2 菜单在本进程弹出才有意义；浅色主题下无可见变化）
         Services.ShellContextMenu.EnableModernMenuTheme();
 
+        // MacWidget 联动（feature/widget-avoid 原型）：接收小组件占用矩形，防抖后全量重排。
+        // 50ms 尾沿防抖：拖拽流 ~15Hz 每包都触发一次重排（display-only，Canon 不写盘）。
+        Services.WidgetAvoid.Start();
+        System.Windows.Threading.DispatcherTimer? avoidKick = null;
+        Services.WidgetAvoid.Changed += () => Dispatcher.BeginInvoke(() =>
+        {
+            if (avoidKick == null)
+            {
+                avoidKick = new System.Windows.Threading.DispatcherTimer
+                { Interval = TimeSpan.FromMilliseconds(50) };
+                avoidKick.Tick += (_, _) => { avoidKick!.Stop(); Desktop.LayoutAllWindows(animated: true); };
+            }
+            avoidKick.Stop();
+            avoidKick.Start();
+        });
+
         base.OnStartup(e);
 
         // 每显示器一个桌面窗口；主屏窗口是 Application.MainWindow（它关闭 = 整个进程退出）

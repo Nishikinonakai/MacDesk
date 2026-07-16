@@ -973,6 +973,62 @@ public partial class MainWindow : Window
         }
     }
 
+    // ── MacWidget 联动：小组件占用矩形 → display-only 图标避让（feature/widget-avoid）──
+
+    private static readonly List<Rect> _noAvoid = new();
+
+    /// <summary>物理屏幕坐标的组件矩形 → 本窗 DIU（PointFromScreen 自带 DPI/原点换算），
+    /// 加呼吸边后只留与本窗相交的。</summary>
+    private List<Rect> AvoidRectsLocal()
+    {
+        var src = Services.WidgetAvoid.Rects;
+        if (src.Count == 0) return _noAvoid;
+        var res = new List<Rect>();
+        var bounds = new Rect(0, 0, WorkSize.W, WorkSize.H);
+        foreach (var r in src)
+        {
+            try
+            {
+                var tl = PointFromScreen(new Point(r.X, r.Y));
+                var br = PointFromScreen(new Point(r.Right, r.Bottom));
+                var rect = new Rect(tl, br);
+                rect.Inflate(6, 6);   // 呼吸边：图标不贴着组件边缘
+                if (rect.IntersectsWith(bounds)) res.Add(rect);
+            }
+            catch { /* 窗口未挂 PresentationSource 等瞬态 */ }
+        }
+        return res;
+    }
+
+    /// <summary>把与矩形相交的所有格标记为占用（格总数 ~12×6，直接全扫）。</summary>
+    private void AddRectCells(HashSet<(int, int)> occupied, Rect r)
+    {
+        int maxCol = MaxCol(), rows = RowsPerColumn();
+        for (int c = 0; c <= maxCol; c++)
+            for (int rw = 0; rw < rows; rw++)
+            {
+                var (cl, ct) = CellPos(c, rw);
+                if (cl < r.Right && cl + CellW > r.Left && ct < r.Bottom && ct + CellH > r.Top)
+                    occupied.Add((c, rw));
+            }
+    }
+
+    static bool HitsAvoid(List<Rect> avoid, double l, double t, double w, double h)
+    {
+        var r = new Rect(l, t, w, h);
+        foreach (var a in avoid) if (a.IntersectsWith(r)) return true;
+        return false;
+    }
+
+    /// <summary>自由摆放的避让：名义位不撞组件 → 原样；撞了 → 借 NearestFreeCell 螺旋
+    /// 找最近空格（placed 已含组件占用格 → 自然获得"穿越连续组件区直到有空位"）。</summary>
+    private (double L, double T) DodgeFree(List<Rect> avoid, HashSet<(int, int)> placed, double l, double t)
+    {
+        if (!HitsAvoid(avoid, l, t, CellW, CellH)) return (l, t);
+        var cell = NearestFreeCell(ClampCell(PosToCell(l, t)), placed);
+        return CellPos(cell.Item1, cell.Item2);
+    }
+
     /// <summary>找空格用的占用集合：自由摆放按显示脚印（可跨格），网格按目标格。</summary>
     private HashSet<(int, int)> OccupiedCellsForSeeding()
     {
@@ -1027,6 +1083,11 @@ public partial class MainWindow : Window
 
         var placed = new HashSet<(int, int)>();
 
+        // MacWidget 联动（display-only）：小组件占用格先行占位——网格分支的 NearestFreeCell、
+        // 自由分支的 DodgeFree、新图标列流全都自动绕开；Canon 分毫不动，组件撤走即回位
+        var avoid = AvoidRectsLocal();
+        foreach (var a in avoid) AddRectCells(placed, a);
+
         // 问号占位的脚印也计入占用，新图标列流别叠上去
         foreach (var name in _missing.Keys)
             if (Desktop.EffectiveCanon(name) is { } mc)
@@ -1043,6 +1104,7 @@ public partial class MainWindow : Window
             foreach (var iv in _icons.Values.Where(i => i.Canon != null))
             {
                 var (l, t) = CanonToPos(iv.Canon!);
+                if (avoid.Count > 0) (l, t) = DodgeFree(avoid, placed, l, t);
                 MoveIcon(iv, l, t, animated);
                 MarkFootprint(placed, l, t);
             }
@@ -1065,6 +1127,7 @@ public partial class MainWindow : Window
         // 没有位置的新图标：按 mac 式右上列流填进空格，并**分配** Canon（唯一写 Canon 的地方）
         int rows = RowsPerColumn();
         int col = 0, row = 0;
+        bool assignedNew = false;
         foreach (var iv in SortForArrange(_icons.Values.Where(i => i.Canon == null)))
         {
             while (placed.Contains((col, row))) Advance(ref col, ref row, rows);
@@ -1073,8 +1136,10 @@ public partial class MainWindow : Window
             iv.Canon = CellToCanon(col, row);
             LayoutFile.Set(MonKey, Path.GetFileName(iv.Entry.Path), iv.Canon);
             MoveIcon(iv, l, t, animated);
+            assignedNew = true;
         }
-        LayoutFile.Save();
+        // 只有真的分配了新 Canon 才落盘——widget 避让期 10-15Hz 重排不许连环重写 layout.json
+        if (assignedNew) LayoutFile.Save();
     }
 
     // ── 使用叠放（macOS Use Stacks v1：文件按类型聚堆，文件夹/虚拟项独立） ──
@@ -1197,8 +1262,14 @@ public partial class MainWindow : Window
     {
         int rows = RowsPerColumn();
         int col = 0, row = 0;
+        // MacWidget 联动：列流跳过组件占用格（display-only；guard 防全屏被盖时死转）
+        var avoidCells = new HashSet<(int, int)>();
+        foreach (var a in AvoidRectsLocal()) AddRectCells(avoidCells, a);
+        int guard = (MaxCol() + 1) * rows;
         (double L, double T) Take()
         {
+            while (avoidCells.Count > 0 && avoidCells.Contains((col, row)) && guard-- > 0)
+                Advance(ref col, ref row, rows);
             var pos = CellPos(col, row);
             Advance(ref col, ref row, rows);
             return pos;
