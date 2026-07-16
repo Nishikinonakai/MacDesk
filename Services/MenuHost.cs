@@ -166,6 +166,29 @@ internal static class MenuHost
     {
         // 阶梯耐心同旧版：host 忙（探针/上一个菜单）≠ 死，只有进程真没了才重拉
         if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 1500)) return;
+        if (HostIsBuilding())
+        {
+            // host 正卡在文件夹菜单构建里。2026-07-11 真机取证：这不是慢扩展在暖机，而是
+            // host 启动竞态偶发把 shell（windows.storage）内部工作线程锁死（WCT 实锤进程内
+            // SendMessage 死链，杀外部进程无解，5min+ 永不完成）——"带毒出生"的 host 等不好。
+            // 策略：短期内降级出菜单顶着（万一是有限慢构建）；持续超 90s 判定带毒，处决重拉
+            // （新 host 重掷骰子，通常即恢复）。
+            _buildingSince ??= DateTime.UtcNow;
+            if (DateTime.UtcNow - _buildingSince < TimeSpan.FromSeconds(90))
+            {
+                Log.Write("menu v2: host busy building, fallback menu while it tries to finish");
+                ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+                return;
+            }
+            Log.Write("menu v2: host stuck building >90s (poisoned shell worker), executing it");
+            lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
+            _buildingSince = null;
+            EnsureSpawned();
+            if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000)) return;
+            ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+            return;
+        }
+        _buildingSince = null;
         bool alive;
         lock (_lock) alive = _host is { HasExited: false };
         if (alive && TryExchangeV2(verb, x, y, desktopHwnd, paths, 4000)) return;
@@ -187,7 +210,17 @@ internal static class MenuHost
             var payload = $"{verb}2{US}{x}{US}{y}{US}{(long)desktopHwnd}{US}{string.Join(US, paths)}";
             WriteFrame(pipe, Encoding.UTF8.GetBytes(payload));
 
-            var replyBytes = ReadFrame(pipe); // host 构建+捕获（首次可能含探针，秒级）
+            var replyBytes = ReadFrameBounded(pipe, BuildWaitMs, out bool slowBuild); // host 构建+捕获（首次可能含探针，秒级）
+            if (replyBytes == null && slowBuild)
+            {
+                // 冷启动的第三方扩展能把 QueryContextMenu 卡 40s~2min+（黑盒内不可中断）。
+                // 封顶等待：降级出菜单、弃掉这条管道，但不杀 host——它熬完这一次全机变暖，
+                // 下次右键即恢复全量原生菜单（host 侧 WriteFrame 失败由其循环兜住）。
+                Log.Write($"menu v2: no reply in {BuildWaitMs}ms (ext cold start?), fallback; host keeps building");
+                try { pipe.Dispose(); } catch { }
+                ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+                return true;
+            }
             if (replyBytes == null) { Log.Write("menu v2: empty reply"); return false; }
 
             // 应答已到手，之后无论出什么错都不许走阶梯重试——菜单可能已经弹过，
@@ -240,6 +273,56 @@ internal static class MenuHost
             Log.Write($"menu v2 exchange failed: {ex.Message}");
             return false;
         }
+    }
+
+    // ── 慢构建兜底（第三方扩展冷启动） ─────────────────────────
+
+    /// <summary>构建应答的封顶等待。合法慢构建实测 ≤2s（含按需探针），带毒 host 卡死 ≥40s~∞，
+    /// 两个量级之间取 8s：宁可多等一会也不误降级。</summary>
+    private const int BuildWaitMs = 8000;
+    private const string BuildingEventName = "MacDesk.MenuHost.Building";
+
+    /// <summary>首次观察到 host 处于构建态的时刻（跨请求跟踪"卡死多久了"，见 RequestCoreV2）。</summary>
+    private static DateTime? _buildingSince;
+
+    /// <summary>host 是否正在构建菜单（构建期它挂出命名事件；进程被杀内核对象即消失，无残留误报）。</summary>
+    private static bool HostIsBuilding()
+    {
+        if (!EventWaitHandle.TryOpenExisting(BuildingEventName, out var h)) return false;
+        h.Dispose();
+        return true;
+    }
+
+    /// <summary>带超时的应答帧读取；timedOut=true = host 还在构建（慢），而非管道断开。</summary>
+    private static byte[]? ReadFrameBounded(Stream s, int timeoutMs, out bool timedOut)
+    {
+        var t = Task.Run(() => { try { return ReadFrame(s); } catch { return (byte[]?)null; } });
+        timedOut = !t.Wait(timeoutMs);
+        return timedOut ? null : t.Result;
+    }
+
+    /// <summary>不经 host 的本地降级菜单（host 被慢扩展占住时的即时出口，核心动词全可用）。</summary>
+    private static void ShowFallbackMenu(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
+    {
+        try
+        {
+            var items = verb == "bg" ? NativeMenuPresenter.CustomBackgroundItems()
+                                     : NativeMenuPresenter.DegradedFileItems(paths);
+            uint cmd = System.Windows.Application.Current.Dispatcher.Invoke(() =>
+            {
+                if (verb == "files")
+                {
+                    NativeMenuPresenter.AppendRenameItem(items, paths);
+                    NativeMenuPresenter.AppendSelectionItems(items, paths);
+                    NativeMenuPresenter.AppendFolderStackItem(items, paths);
+                    NativeMenuPresenter.AppendLeRunItem(items, paths);
+                }
+                return NativeMenuPresenter.Track(desktopHwnd, items, x, y);
+            });
+            Log.Write($"menu v2: {verb} fallback shown ({items.Count} items), cmd=0x{cmd:X}");
+            if (cmd != 0) NativeMenuPresenter.DispatchLocal(cmd, paths);
+        }
+        catch (Exception ex) { Log.Write("menu v2 fallback failed: " + ex.Message); }
     }
 
     // ── 客户端旧路径（host 内 track） ─────────────────────────
@@ -380,16 +463,29 @@ internal static class MenuHost
                 }
 
                 var sw = Stopwatch.StartNew();
-                using var built = parts[0] == "bg2"
-                    ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
-                    : ShellContextMenu.BuildFileMenu(paths, _ownerHwnd);
-                if (built == null)
+                // 构建期挂出命名事件：慢扩展冷启动卡住时，主进程借此分辨"忙"和"死"，
+                // 不再误杀正在暖机的 host（事件只覆盖构建段，等命令帧期间不算忙）。
+                ShellContextMenu.BuiltShellMenu? builtRaw;
+                List<MenuSnapshot.Item>? items = null;
+                var building = new EventWaitHandle(true, EventResetMode.ManualReset, BuildingEventName);
+                try
+                {
+                    builtRaw = parts[0] == "bg2"
+                        ? ShellContextMenu.BuildBackgroundMenu(paths[0], _ownerHwnd)
+                        : ShellContextMenu.BuildFileMenu(paths, _ownerHwnd);
+                    if (builtRaw != null)
+                    {
+                        MenuSnapshot.ForceInit(builtRaw.MenuObj, builtRaw.HMenu, 0); // 根菜单的 WM_INITMENUPOPUP
+                        items = MenuSnapshot.Capture(builtRaw.HMenu, builtRaw.MenuObj);
+                    }
+                }
+                finally { building.Dispose(); }
+                using var built = builtRaw;
+                if (built == null || items == null)
                 {
                     WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "error" }));
                     continue;
                 }
-                MenuSnapshot.ForceInit(built.MenuObj, built.HMenu, 0); // 根菜单的 WM_INITMENUPOPUP
-                var items = MenuSnapshot.Capture(built.HMenu, built.MenuObj);
                 WriteFrame(server, JsonSerializer.SerializeToUtf8Bytes(new Reply { Kind = "native", Items = items }));
                 Log.Write($"menu host v2: captured {items.Count} top-level items in {sw.ElapsedMilliseconds}ms");
 
@@ -462,18 +558,22 @@ internal static class MenuHost
         {
             if (_safeByKind.TryGetValue(key, out bool cached)) return cached;
             bool safe = false;
+            bool exited = true;
             try
             {
                 var psi = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false };
                 psi.ArgumentList.Add("--menuprobe");
                 psi.ArgumentList.Add(path);
                 var p = Process.Start(psi)!;
-                safe = p.WaitForExit(8000) && p.ExitCode == 0;
-                if (!p.HasExited) { try { p.Kill(); } catch { } }
+                exited = p.WaitForExit(8000);
+                if (!exited) { try { p.Kill(); } catch { } }
+                // 超时 ≠ 崩溃：fail-fast 崩溃瞬间就死，活满 8s 只是慢（扩展冷启动实测可卡 40s+）。
+                // 若按不安全处理，探针恰逢冷窗口时会把整类（如 <dir>）打成本进程终身降级。
+                safe = exited ? p.ExitCode == 0 : true;
             }
             catch (Exception ex) { Log.Write("probe spawn failed: " + ex.Message); }
             _safeByKind[key] = safe;
-            Log.Write($"menu probe [{key}] -> {(safe ? "full native" : "degraded")}");
+            Log.Write($"menu probe [{key}] -> {(safe ? "full native" : "degraded")}{(exited ? "" : " (timeout: slow ext, assumed safe)")}");
             return safe;
         }
     }
