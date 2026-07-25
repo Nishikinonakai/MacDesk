@@ -56,8 +56,14 @@ internal sealed class Settings
     public bool DynamicTransparent { get; set; } = true;
 
     /// <summary>自启动用计划任务（onlogon 即启）替代 Run 键，绕过 Windows 对启动项的
-    /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。</summary>
-    public bool FastAutostart { get; set; }
+    /// 串行延迟（机主实测 Run 键要等 ~40s+）。仅记录偏好；实际状态以系统里注册的为准。
+    /// 默认开（v1.6.0 起）——用户反馈"开机启动太慢、能不能像 Wallpaper Engine 那样注册成服务"。</summary>
+    public bool FastAutostart { get; set; } = true;
+
+    /// <summary>自启机制一次性迁移标记：≤v1.5.0 的 settings.json 里 FastAutostart 显式写着
+    /// false（旧默认值，不是用户的选择），首次跑新版把已有的 Run 键自启换成计划任务，
+    /// 之后一切以设置里的开关为准（见 App.StartBackgroundStartupChores）。</summary>
+    public bool AutostartMigrated { get; set; }
 
     /// <summary>界面语言：auto（跟随系统 UI 语言）| zh | en。重启生效（见 L.cs）。</summary>
     public string Language { get; set; } = "auto";
@@ -141,6 +147,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("DynamicTransparent", out var dt)) s.DynamicTransparent = dt.GetBoolean();
                 if (doc.RootElement.TryGetProperty("DynamicNoAnimations", out var na)) s.DynamicNoAnimations = na.GetBoolean();
                 if (doc.RootElement.TryGetProperty("FastAutostart", out var fa)) s.FastAutostart = fa.GetBoolean();
+                if (doc.RootElement.TryGetProperty("AutostartMigrated", out var am)) s.AutostartMigrated = am.GetBoolean();
                 if (doc.RootElement.TryGetProperty("StackGroupBy", out var gb) && gb.ValueKind == JsonValueKind.String)
                     s.StackGroupBy = gb.GetString()!;
                 if (doc.RootElement.TryGetProperty("StackFolders", out var sf) && sf.ValueKind == JsonValueKind.Array)
@@ -174,7 +181,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, Language, SpacePreview, NativeBackgroundMenu, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

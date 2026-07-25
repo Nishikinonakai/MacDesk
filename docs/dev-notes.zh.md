@@ -1362,3 +1362,101 @@ DynamicNoShadows/NoAnimations 两开关在透明模式下语义失效（阴影�
   复发取证手册 `C:\work\coldtest\PLAYBOOK-issue9.md` 已上机——含上次没做完的对照实验
   清单（免疫之谜的取证路线）。issue#9 已带数据回帖并关闭（mitigated），复发或有用户
   反馈即重开。
+
+## 2026-07-25：用户反馈两连修——Win+Tab 幽灵窗口 + 开机闪一下原生图标（`fix/taskview-and-boot-flash`）
+
+反馈原文（B 站）："修复一下会在 win+tab 的后台显示，还有电脑刚开机运行软件刚会闪一下
+原桌面图标的 bug 呗，或者可以和 wallpaper 一样注册为系统服务，这样启动更快"。
+
+### ① Win+Tab / Alt+Tab 里的 "MacDeskDesktop" 黑卡片
+
+**根因（真机取证，Win11 26200）**：桌面层窗口是"先当顶层窗口在屏幕外渲染首帧、再
+SetParent 进 DefView"（这个顺序不能改——Show 中途转子窗口会掐死 WPF 渲染管线，见
+2026-07-06 条）。**问题在于 shell 在它还是顶层窗口的那一瞬就把它登记进窗口列表了，
+之后转成 WS_CHILD 并不会注销这条登记**——Task View / Alt+Tab 继续列它，缩略图是黑的
+（窗口已经不是顶层，取不到画面）。取证：`EnumWindows` 扫全部顶层窗口**找不到**标题
+`MacDeskDesktop` 的窗口（它确实是 DefView 的子窗口，ex=0x00000000），但 Win+Tab 里
+那张卡片实实在在在。
+
+**修复**：`OnSourceInitialized`（HWND 已建、还没显示）给窗口加 `WS_EX_TOOLWINDOW`
+——shell 明确的"别列我"信号；`AttemptAttach` 挂载成功后再复核补一次（WPF 在 Show
+流程里还会摸窗口样式）。真机验证：**活体给旧实例补上 WS_EX_TOOLWINDOW，Task View
+里的卡片立刻消失**（说明 shell 是开面板时现读样式，不是只认创建时刻），新版启动后
+Win+Tab / Alt+Tab 全干净、设置窗口（真·应用窗口）照常在列。
+
+### ② 开机"闪一下原生图标"
+
+**两段窗口期**，一段一刀：
+- **Explorer 那段**：Explorer 建桌面视图时会把原生图标画出来，我们再快也是"先画后藏"。
+  修复 = 用 Explorer 自己的持久状态：`HKCU\…\Explorer\Advanced\HideIcons`（= 桌面右键
+  「查看 → 显示桌面图标」那个勾），**Explorer 建桌面视图时读它**，为 1 就压根不画。
+  真机三组对照实验（详见下）确认这条路成立。
+- **我们自己那段**：老代码等到"WPF 起窗口 → 首帧渲染 → 挂载成功"才 `ShowWindow(SW_HIDE)`,
+  真机日志实测 **~1.07s**。修复 = `App.OnStartup` 解析完模式开关立刻 `TryHideNativeIconsEarly()`
+  （只发现 + 藏，不挂窗口），**实测降到 ~0.20s**（剩下的就是 .NET/WPF 进程起来的时间）。
+
+**持久状态怎么改（踩坑）**：不能只写注册表——Explorer 进程内还存着自己的一份状态，
+两边分叉时它可能按旧状态盖回（真机遇到过一次）。正解是发 shell 自己的命令：
+`SendMessageTimeout(DefView, WM_COMMAND, 0x7402)`（"显示桌面图标"切换），它把进程内
+状态和注册表一起改。命令是**切换**不是设置 → 先读 `HideIcons` 再决定发不发，发完复核，
+复核不过退回直写注册表（`Services/NativeIcons.cs`）。
+
+**只在开机自启开着时才持久隐藏**：否则重启后没人接管桌面，用户对着一张空桌面。
+配套还原点全铺开：用户退出（`--quit`）/ 关掉自启（设置开关、菜单、`--disable-autostart`）/
+挂载 20s 失败自杀 / 卸载器（新增一次性动作 `--restore-icons`，兜住"卸载时 MacDesk 没在跑"）。
+特例：**"本会话仍要藏、只是不再持久"只改注册表不发切换命令**——发了会让原生图标真的
+显出来，而我们还盖在桌面上（透明直通模式会直接透出来 = 双份图标）。
+
+### ③ "注册为系统服务，启动更快"
+
+不做真服务（服务跑在 session 0，碰不到桌面），走既有的**计划任务自启**（onlogon 即启、
+Priority 5、跳过 Windows 启动项排队，机主实测 Run 键要等 40s+）。这版把它**转正为默认**
+（`FastAutostart` 默认 true），并加一次性迁移标记 `AutostartMigrated`：老用户 settings.json
+里写死的 `FastAutostart:false` 是旧默认值不是用户选择，首次跑新版自动把 Run 键换成计划任务
+（真机验证：Run 键被删、任务建好、日志留痕），之后一切以设置里的开关为准。
+
+### ④ 顺带硬化（自启变快后才会撞上的竞态）
+
+- `EnsureDiscovered`：defview 模式下找不到 SHELLDLL_DefView 就**返回 false 不缓存**，
+  不再退而求其次挂 Progman。老代码那条兜底在登录即启时正好会撞上（"Progman 已出生、
+  DefView 还没建"的窗口期），而**没有 DefView 的 Progman 在 Win11 26200 根本不渲染**
+  （`--parent=progman` 早就标着"仅调试用"）——等于一张看不见的桌面，且 `_attached` 已置位
+  再也不会重试。改成耐心等：`AttemptAttach` 重试期 20s → **60s**，每 5s 记一行日志
+  （`waiting for shell desktop… (Ns; progman=… defview=…)`），到点仍无桌面才清洁退出
+  （退出会还原原生图标，用户至少有个能用的原生桌面）。
+- **放弃挂载时先还桌面再弹框**（真机压测挖出来的老坑）：`attach FAILED` 分支原本是
+  「弹模态 MessageBox → BeginUserQuit」，而 MessageBox 把 UI 线程堵在嵌套消息循环里，
+  `BeginUserQuit`（→ OnExit 里的还原）要等用户点确定才跑——进程就那么挂着不退（真机实录：
+  框挂了 5 分钟，DispatcherTimer 还在跳，日志一直刷）。以前无所谓（还原只是 ShowWindow），
+  **现在"原生图标持久隐藏"开着，那期间用户对着的是一张空桌面**。改成先 `NativeIcons.Apply(false,false)`
+  再弹框。压测验证：摁死 shell → t=61s 给出 `persistent hidden=False (registry fallback: no DefView)`，
+  注册表当场回 0。
+- `ListViewHwnd` 改成**现查兜底**（`ResolveListView`）：发现桌面的时机提前后，可能撞上
+  "DefView 刚建好、SysListView32 还没出生"，那次拿到的 0 会被永久缓存 = 整个会话藏不掉。
+
+### 真机验证（home-win，Win11 26200，4096×2160@300%，全部实测）
+
+| 项 | 结果 |
+|---|---|
+| Win+Tab / Alt+Tab | 修前两处都有 `MacDeskDesktop` 黑卡片；修后全干净，设置窗口仍在列 ✓ |
+| 早藏 | 原生图标隐藏时刻 1111ms → **208ms**（同机同场景） |
+| 持久状态落地 | 启动后 `HideIcons` 0→1，日志 `native icons: persistent hidden=True (shell toggle)` |
+| 开机模拟 | 杀 MacDesk（非正常退出，不还原）+ 重启 Explorer → **全新 shell 一个原生图标都没画** ✓ |
+| 计划任务启动 | `schtasks /Run` → 图标上屏 **1074ms** |
+| 赛跑（我们赢 shell） | 杀 Explorer 后 150ms 立刻启动 MacDesk（Progman=0）→ 耐心等到桌面出生，挂进真 DefView，+1714ms ✓ |
+| 自启迁移 | Run 键删除、计划任务 Ready、settings 落 `FastAutostart/AutostartMigrated: true` ✓ |
+| `--quit` 还原 | `HideIcons` 1→0、原生图标显示、三进程全退 ✓ |
+| `--restore-icons` | 人为造"持久藏 + 没跑"→ 还原成功（切换命令没落地时自动退回直写注册表，日志留痕）✓ |
+| 关自启 | 持久状态清 0、**本会话原生图标仍是藏的**（不出双份图标）、MacDesk 照常跑 ✓ |
+| 看门狗恢复 | 强杀主进程 → 拉起后 ex=0x80 仍在、`HideIcons` 回 1、图标层正常 ✓ |
+| 交互回归 | 单击选中、桌面右键菜单、设置窗六页、Alt+Tab 里只有设置窗 ✓ |
+| 红线 | 全程 layout.json SHA256 逐字节不变（9FBD4457…）✓ |
+
+**一条没吃透的 Windows 行为（留档）**：直写 `HideIcons` 有时会被 Explorer 按自己的状态盖回
+（本轮遇到两次：都是"写 0"的方向，重启 shell 后又变回 1；写 1 的方向三次都被尊重）。所以
+持久状态的**主路径恒走 shell 切换命令**（两边同时改），直写只当没有 DefView 时的兜底。
+影响面：只有"shell 整个不在了"的退化场景会落到直写路径，而那时用户本来就没有桌面。
+
+**未覆盖**：真·重启（这台机器没开自动登录，重启后停在锁屏 = 远程测不到登录触发器真的
+开火，也拿不到冷盘时序）。机制本身已用"全新 shell 重建桌面"证到位，登录触发器是
+Windows 标准行为且同机 MacDeskAgent 用的同一形态。

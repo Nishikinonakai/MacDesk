@@ -90,6 +90,11 @@ begin
     begin
       Exec(ExpandConstant('{app}\MacDesk.exe'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, R);
       Sleep(4000);
+      // 还原 Windows 的「显示桌面图标」持久状态（自启开着时我们会把它关掉，让开机不闪原生图标）。
+      // --quit 已经在跑着的实例里还原过；这行兜住"卸载时 MacDesk 没在跑"——否则卸完是空桌面。
+      // 放在 taskkill 之前：它自己是短命一次性进程，紧跟着的 taskkill 顺便兜住它卡住的情况。
+      Exec(ExpandConstant('{app}\MacDesk.exe'), '--restore-icons', '', SW_HIDE, ewWaitUntilTerminated, R);
+      Sleep(500);
       // 同 PrepareToInstall：兜底强杀残留 helper，否则锁着的 DLL 让卸载删文件失败
       Exec('taskkill.exe', '/F /IM MacDesk.exe', '', SW_HIDE, ewWaitUntilTerminated, R);
       Sleep(500);
