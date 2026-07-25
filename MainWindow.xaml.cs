@@ -167,6 +167,13 @@ public partial class MainWindow : Window
         _hwnd = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(_hwnd)?.AddHook(ForceCoverHook);
 
+        // 桌面层不是"应用窗口"：Show() 那一瞬我们还是顶层窗口，shell 就把它登记进窗口列表了，
+        // 之后 SetParent 进 DefView 变子窗口**不会**注销这条登记 → Alt+Tab / Win+Tab 里留一张
+        // 标题 "MacDeskDesktop" 的黑卡片（用户反馈，真机 26200 实锤）。WS_EX_TOOLWINDOW 是
+        // 明确的"别列我"信号：在这里（HWND 已建、还没显示）设上，shell 从头到尾都不会收录。
+        Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE,
+            Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE) | Native.WS_EX_TOOLWINDOW);
+
         // 空白处：左键框选 / 右键背景菜单
         RootGrid.MouseLeftButtonDown += OnCanvasMouseDown;
         RootGrid.MouseMove += OnCanvasMouseMove;
@@ -268,9 +275,12 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 挂载桌面层，失败则按 500ms 节奏重试（最多 ~20s）。
+    /// 挂载桌面层，失败则按 500ms 节奏重试（最多 ~60s）。
     /// 重试是 Explorer 重启恢复的关键：看门狗在旧 shell 死、新 shell 未起的空窗期把我们拉起时，
     /// 我们会耐心等新 SHELLDLL_DefView 出现，而不是立刻报错退出。
+    /// 计划任务自启（登录即启）让"我们跑赢 shell"从罕见变常见，所以耐心期给到 60s：
+    /// 宁可多等也不能退而求其次挂 Progman——没有 DefView 的 Progman 在 Win11 26200 根本不渲染
+    /// （见 dev-notes "--parent=progman 仅调试用"），那等于一张看不见的桌面且再也不会重试。
     /// </summary>
     private void AttemptAttach()
     {
@@ -280,10 +290,16 @@ public partial class MainWindow : Window
         if (!ok)
         {
             _attachAttempts++;
-            if (_attachAttempts >= 40)
+            if (_attachAttempts % 10 == 0)
+                Log.Write($"[{MonKey}] waiting for shell desktop… ({_attachAttempts / 2}s; progman={DesktopLayer.ProgmanHwnd} defview={DesktopLayer.DefViewHwnd})");
+            if (_attachAttempts >= 120)
             {
-                // 20s 都等不到 shell = 真的没有桌面可挂 → 清洁退出并停掉看门狗（重启也没用）
+                // 60s 都等不到 shell = 真的没有桌面可挂 → 清洁退出并停掉看门狗（重启也没用）
                 Log.Write("attach FAILED after retries; giving up");
+                // 先把桌面还给用户再弹框：MessageBox 是模态的，会把 UI 线程堵在嵌套消息循环里，
+                // 后面的 BeginUserQuit（→ OnExit 里的还原）要等用户点确定才跑——而"原生图标持久
+                // 隐藏"开着时，那期间用户对着的是一张空桌面（真机踩到：弹框一直挂着，进程不退）。
+                NativeIcons.Apply(hidden: false, persist: false);
                 if (!App.LaunchedByRecovery)
                     MessageBox.Show(L.T("挂载桌面层失败（找不到 Progman/DefView）。", "Failed to attach to the desktop layer (Progman/DefView not found)."), "MacDesk");
                 App.BeginUserQuit();
@@ -297,8 +313,13 @@ public partial class MainWindow : Window
 
         _attached = true;
         Log.Write($"[{MonKey}] attached hwnd={_hwnd} parent={DesktopLayer.ParentHwnd} progman={DesktopLayer.ProgmanHwnd} defview={DesktopLayer.DefViewHwnd}");
+        // SetParent 不动扩展样式，但 WPF 在 Show 流程里还会摸窗口样式——挂完复核一次，
+        // 保证 Alt+Tab / Win+Tab 的"别列我"标记在最终状态上确实在（代价一次 GetWindowLong）
+        Native.SetWindowLong(_hwnd, Native.GWL_EXSTYLE,
+            Native.GetWindowLong(_hwnd, Native.GWL_EXSTYLE) | Native.WS_EX_TOOLWINDOW);
         CoverAndSync();
         if (IsPrimary && App.HideNativeIcons) DesktopLayer.SetNativeIconsVisible(false);
+        if (IsPrimary) App.StartBackgroundStartupChores(); // 自启机制迁移 + 原生图标持久状态（要 DefView）
 
         Desktop.RefreshAll(); // 已挂载的窗口各取自己的图标子集
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
@@ -338,8 +359,9 @@ public partial class MainWindow : Window
         {
             SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
             LayoutFile.Save();
-            // 只有用户主动退出才还原原生图标；非用户退出（分辨率变化/被 shell 带走）由看门狗拉起的新实例接管
-            if (App.UserQuitting) DesktopLayer.SetNativeIconsVisible(true);
+            // 只有用户主动退出才还原原生图标（连同 Explorer 的持久状态，否则下次开机是空桌面）；
+            // 非用户退出（分辨率变化/被 shell 带走/关机）由看门狗拉起的新实例接管，持久状态要留着
+            if (App.UserQuitting) NativeIcons.Apply(hidden: false, persist: false);
             _msgWin?.Dispose();
             Desktop.Provider.Dispose();
         }

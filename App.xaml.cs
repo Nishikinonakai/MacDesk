@@ -78,6 +78,56 @@ public partial class App : Application
         return mode.ToArray();
     }
 
+    /// <summary>子进程 / 一次性动作的开关（这些模式不接管桌面，别碰原生图标、别做启动杂务）。</summary>
+    private static readonly string[] HelperArgs =
+    {
+        "--quit", "--enable-autostart", "--disable-autostart", "--restore-icons", "--watchdog",
+        "--menuhost", "--ulwtest", "--menudump", "--menuprobe", "--contextmenu", "--bgmenu",
+    };
+
+    /// <summary>本次启动是"接管桌面的主实例"（不是 helper 也不是一次性动作）。</summary>
+    private static bool IsMainInstanceLaunch(string[] args) => !args.Any(HelperArgs.Contains);
+
+    private static int _choresStarted;
+
+    /// <summary>启动杂务（要 spawn 进程 / 查注册表，别拖慢首屏，也要等 DefView 就位 →
+    /// 主屏窗口挂载成功后在后台线程跑一次）：
+    ///  ① 自启机制一次性迁移到计划任务（Run 键有 Windows 的启动项排队延迟，机主实测 40s+）；
+    ///  ② 把"隐藏原生图标"落到 Explorer 的持久状态（开机不再闪一下原生图标）。</summary>
+    internal static void StartBackgroundStartupChores()
+    {
+        if (Interlocked.Exchange(ref _choresStarted, 1) != 0) return;
+        new Thread(() =>
+        {
+            var cfg = Desktop.Config;
+            try
+            {
+                // ① 老用户的 settings.json 里 FastAutostart 显式写着 false（那是旧默认值，
+                // 不是用户的选择）——一次性升级到计划任务，之后以设置里的开关为准。
+                if (!cfg.AutostartMigrated)
+                {
+                    cfg.AutostartMigrated = true;
+                    cfg.FastAutostart = true;
+                    cfg.Save();
+                    if (Services.Autostart.IsEnabled() && !Services.Autostart.IsFastMode())
+                    {
+                        Services.Log.Write("autostart: migrating Run key -> scheduled task (faster logon start)");
+                        Services.Autostart.Enable(LaunchModeArgs, fast: true);
+                    }
+                }
+            }
+            catch (Exception ex) { Services.Log.Write("autostart migration failed: " + ex.Message); }
+
+            try
+            {
+                // ② 只有自启开着才持久隐藏：否则重启后没人接管 = 用户对着空桌面
+                Services.NativeIcons.Apply(hidden: HideNativeIcons, persist: Services.Autostart.IsEnabled());
+            }
+            catch (Exception ex) { Services.Log.Write("native icon persist failed: " + ex.Message); }
+        })
+        { IsBackground = true }.Start();
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         var cfg = Services.Settings.Load();
@@ -95,6 +145,13 @@ public partial class App : Application
             HandoffSeed = Services.Handoff.TryLoadSeed();
         }
         LaunchModeArgs = ExtractModeArgs(e.Args);
+
+        // 开机"闪一下原生图标"的第一刀：解析完开关立刻藏，别等 WPF 建窗口+首帧渲染+挂载
+        //（真机日志从这行到 attached 有 ~0.9s，冷启动更久）。找不到桌面就算了，AttemptAttach 会再藏。
+        // 持久状态（Explorer 建桌面视图时就不画）在 StartBackgroundStartupChores 里落，两层配合。
+        if (HideNativeIcons && IsMainInstanceLaunch(e.Args))
+            Interop.DesktopLayer.TryHideNativeIconsEarly(ParentMode);
+
         // issue #1：老世代 Intel 核显的原生 D3D9 驱动烧壁纸亮部（1:1 零缩放照烧、最新驱动无效），
         // 「自动」检测到即整进程软渲绕开（见 Gpu.cs）；--soft / 设置「强制软件」仍是手动兜底。
         _softRenderReason = e.Args.Contains("--soft") ? "--soft"
@@ -114,6 +171,17 @@ public partial class App : Application
         if (e.Args.Contains("--disable-autostart"))
         {
             Services.Autostart.Disable();
+            Services.NativeIcons.ClearPersistentHide(); // 不再自启 = 下次开机得让原生图标兜底
+            Shutdown();
+            return;
+        }
+
+        // 还原原生桌面图标（会话可见性 + Explorer 持久状态），一次性动作。卸载器在删文件前调用：
+        // MacDesk 没在跑时 --quit 无人接收，持久隐藏就会留在系统里 = 卸载完对着空桌面。
+        if (e.Args.Contains("--restore-icons"))
+        {
+            Interop.DesktopLayer.EnsureDiscovered();
+            Services.NativeIcons.Apply(hidden: false, persist: false);
             Shutdown();
             return;
         }
@@ -267,8 +335,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        // 只有用户主动退出才还原原生图标；非用户退出（分辨率变化/被 shell 带走）交给看门狗拉起的新实例
-        if (UserQuitting) Interop.DesktopLayer.SetNativeIconsVisible(true);
+        // 只有用户主动退出才还原原生图标（连同 Explorer 的持久状态）；非用户退出
+        //（分辨率变化/被 shell 带走/关机注销）交给看门狗或下次开机的新实例，持久状态要留着
+        if (UserQuitting) Services.NativeIcons.Apply(hidden: false, persist: false);
         _instanceMutex?.Dispose();
         _quitEvent?.Dispose();
         base.OnExit(e);

@@ -47,10 +47,16 @@ internal static class Autostart
         Log.Write("autostart disabled");
     }
 
+    /// <summary>菜单/热键路径的开关。顺带同步「原生图标持久隐藏」——它只在自启开着时才该留着
+    /// （关掉自启后下次开机没人接管桌面，得让 Explorer 自己把原生图标画回来）。</summary>
     public static void Toggle(IEnumerable<string> modeArgs)
     {
-        if (IsEnabled()) Disable();
-        else Enable(modeArgs, Desktop.Config?.FastAutostart ?? false);
+        if (IsEnabled()) { Disable(); NativeIcons.ClearPersistentHide(); }
+        else
+        {
+            Enable(modeArgs, Desktop.Config?.FastAutostart ?? true);
+            NativeIcons.Apply(App.HideNativeIcons, persist: true);
+        }
     }
 
     // ── Run 键机制 ────────────────────────────────────────────

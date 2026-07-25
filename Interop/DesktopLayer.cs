@@ -17,7 +17,11 @@ internal static class DesktopLayer
     public static IntPtr ListViewHwnd { get; private set; }
     public static IntPtr ParentHwnd { get; private set; }
 
-    /// <summary>发现桌面层父窗口（进程内一次性；失败返回 false 可重试）。</summary>
+    /// <summary>发现桌面层父窗口（进程内一次性；失败返回 false 可重试）。
+    /// defview 模式下找不到 SHELLDLL_DefView 就返回 false **不缓存**：开机自启（尤其计划任务
+    /// 的登录即启）会撞上"Progman 已出生、DefView 还没建"的窗口期，此时退而求其次挂 Progman
+    /// 会把这个错父窗口永久缓存进来——图标层不在桌面视图里（Win11 26200 上根本不渲染）、
+    /// 原生图标也藏不掉，且 _attached 已置位再也不会重试。调用方（AttemptAttach）耐心重试即可。</summary>
     public static bool EnsureDiscovered(string parentMode = "defview")
     {
         if (ParentHwnd != IntPtr.Zero && IsWindow(ParentHwnd)) return true;
@@ -56,6 +60,8 @@ internal static class DesktopLayer
             case "defview" when defView != IntPtr.Zero:
                 parent = defView;
                 break;
+            case "defview":
+                return false; // 桌面视图还没建好：不缓存，等下一发重试
             case "workerw":
                 var w2 = FindWindowEx(ProgmanHwnd, IntPtr.Zero, "WorkerW", null);
                 if (w2 != IntPtr.Zero) parent = w2;
@@ -67,6 +73,21 @@ internal static class DesktopLayer
             ListViewHwnd = FindWindowEx(defView, IntPtr.Zero, "SysListView32", null);
         ParentHwnd = parent;
         return true;
+    }
+
+    /// <summary>启动最早期就把原生图标藏掉（不挂窗口）：等 WPF 起窗口+首帧渲染再藏，
+    /// 真机实测有 ~1s 的"原生图标闪一下"窗口期（用户反馈）。找不到桌面就返回 false，
+    /// 正常挂载路径（AttemptAttach）会再藏一次。</summary>
+    public static bool TryHideNativeIconsEarly(string parentMode = "defview")
+    {
+        try
+        {
+            if (!EnsureDiscovered(parentMode)) return false;
+            if (!NativeIconsVisible) return true; // 已经是藏的（持久状态生效 = 开机压根没画）
+            SetNativeIconsVisible(false);
+            return !NativeIconsVisible;
+        }
+        catch { return false; }
     }
 
     /// <summary>把一个（已完成首帧渲染的）窗口挂进桌面层。多窗口各自调用。</summary>
@@ -95,15 +116,29 @@ internal static class DesktopLayer
         return rect;
     }
 
+    /// <summary>原生图标列表句柄（现查兜底）：发现桌面时 DefView 可能刚建好、SysListView32
+    /// 还没出生（早藏路径把发现时机提前后更容易撞上），那次拿到的 0 会被永久缓存 =
+    /// 整个会话都藏不掉原生图标。每次用之前复核一遍。</summary>
+    private static IntPtr ResolveListView()
+    {
+        if (ListViewHwnd != IntPtr.Zero && IsWindow(ListViewHwnd)) return ListViewHwnd;
+        if (DefViewHwnd != IntPtr.Zero && IsWindow(DefViewHwnd))
+            ListViewHwnd = FindWindowEx(DefViewHwnd, IntPtr.Zero, "SysListView32", null);
+        return ListViewHwnd;
+    }
+
     /// <summary>只藏 SysListView32（原生图标列表）——DefView 不能藏，我们自己挂在它下面。</summary>
     public static void SetNativeIconsVisible(bool visible)
     {
-        if (ListViewHwnd != IntPtr.Zero && IsWindow(ListViewHwnd))
-            ShowWindow(ListViewHwnd, visible ? SW_SHOW : SW_HIDE);
+        var lv = ResolveListView();
+        if (lv != IntPtr.Zero && IsWindow(lv))
+            ShowWindow(lv, visible ? SW_SHOW : SW_HIDE);
         if (visible && DefViewHwnd != IntPtr.Zero && IsWindow(DefViewHwnd) && !IsWindowVisible(DefViewHwnd))
             ShowWindow(DefViewHwnd, SW_SHOW);
     }
 
-    public static bool NativeIconsVisible =>
-        ListViewHwnd != IntPtr.Zero && IsWindowVisible(ListViewHwnd);
+    public static bool NativeIconsVisible
+    {
+        get { var lv = ResolveListView(); return lv != IntPtr.Zero && IsWindowVisible(lv); }
+    }
 }

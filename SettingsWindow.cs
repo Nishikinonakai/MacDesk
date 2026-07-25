@@ -516,14 +516,19 @@ internal sealed class SettingsWindow : Window
         p.Children.Add(Section(L.T("启动", "Startup")));
         var startup = new StackPanel();
         startup.Children.Add(Row(L.T("开机自启", "Launch at Startup"), Toggle(Autostart.IsEnabled(),
-            v => { if (v) Autostart.Enable(App.LaunchModeArgs, Config.FastAutostart); else Autostart.Disable(); })));
+            v =>
+            {
+                if (v) { Autostart.Enable(App.LaunchModeArgs, Config.FastAutostart); NativeIcons.Apply(App.HideNativeIcons, persist: true); }
+                else { Autostart.Disable(); NativeIcons.ClearPersistentHide(); }
+            }), L.T("开着时顺带让 Windows 记住「不显示桌面图标」，开机阶段就不会先闪一下原生图标；关掉即还原。",
+                    "While on, Windows also remembers \"hide desktop icons\", so the native icons never flash during boot; turning it off restores them.")));
         startup.Children.Add(Separator());
         startup.Children.Add(Row(L.T("加速自启动", "Fast Startup"), Toggle(Config.FastAutostart, v =>
         {
             Config.FastAutostart = v;
             Config.Save();
             if (Autostart.IsEnabled()) Autostart.Enable(App.LaunchModeArgs, v); // 就地切换机制
-        }), L.T("用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟）", "Use a scheduled task instead of a Run entry: starts right at logon, skipping the Windows startup-app queue")));
+        }), L.T("用计划任务代替启动项，登录后立即启动（跳过 Windows 对启动应用的排队延迟，实测可省几十秒）", "Use a scheduled task instead of a Run entry: starts right at logon, skipping the Windows startup-app queue (tens of seconds in practice)")));
         p.Children.Add(Card(startup));
 
         p.Children.Add(Section(L.T("语言与交互", "Language & Interaction")));

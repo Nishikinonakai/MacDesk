@@ -107,6 +107,12 @@ the new installer and replaces itself silently, then relaunches.
   desktop layer within ~250 ms if Explorer restarts or the main process dies.
   Resolution changes are a seamless process handoff with zero bare-desktop
   flash.
+- **Flicker-free boot.** With autostart on, MacDesk also flips Windows' own
+  "show desktop icons" state off, so Explorer never paints the native icons
+  during boot — the desktop no longer flashes the stock icons before MacDesk
+  takes over. Autostart runs as a logon scheduled task, skipping the Windows
+  startup-app queue. Quitting MacDesk, turning autostart off, or uninstalling
+  restores the native icons.
 - **macOS-style Settings window** — sidebar + content pages following the
   system light/dark theme: autostart (with a fast scheduled-task mode),
   **interface language (system / English / 简体中文)**, accent color,
