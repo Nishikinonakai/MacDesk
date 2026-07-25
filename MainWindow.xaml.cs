@@ -1271,13 +1271,32 @@ public partial class MainWindow : Window
         // MacWidget 联动：列流跳过组件占用格（display-only；guard 防全屏被盖时死转）
         var avoidCells = new HashSet<(int, int)>();
         foreach (var a in AvoidRectsLocal()) AddRectCells(avoidCells, a);
-        int guard = (MaxCol() + 1) * rows;
+        int maxCol = MaxCol();
+        int cellCount = (maxCol + 1) * rows;
+        bool fallingBackFromFullAvoid = false;
         (double L, double T) Take()
         {
-            while (avoidCells.Count > 0 && avoidCells.Contains((col, row)) && guard-- > 0)
+            // 防止组件覆盖整个网格时一路走到 MaxCol 之外：此前 guard 用尽后仍会
+            // 取越界的 col，结果叠放图标全落到屏幕左侧不可见。没有可避让的格时，
+            // "图标仍可见"优先于避让；本轮退回正常列流且不触碰 Canon。
+            int skipped = 0;
+            while (avoidCells.Count > 0 && avoidCells.Contains((col, row)) && skipped < cellCount)
+            {
                 Advance(ref col, ref row, rows);
+                skipped++;
+            }
+            if (skipped == cellCount)
+            {
+                Log.Write($"[{MonKey}] widgetavoid covers all stack cells; keeping stacks visible");
+                avoidCells.Clear();
+                col = 0;
+                row = 0;
+                fallingBackFromFullAvoid = true;
+            }
             var pos = CellPos(col, row);
             Advance(ref col, ref row, rows);
+            // 整屏都被覆盖时，后续堆也复用可见网格，不能再向左越界消失。
+            if (fallingBackFromFullAvoid && col > maxCol) { col = 0; row = 0; }
             return pos;
         }
 
