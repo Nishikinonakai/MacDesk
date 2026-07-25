@@ -219,6 +219,11 @@ public partial class MainWindow : Window
         CommandChannel.Listen("SortKind", () => Dispatcher.BeginInvoke(() => SortArrangeAll("kind")));
         CommandChannel.Listen("Quit", () => Dispatcher.BeginInvoke(App.BeginUserQuit));
         CommandChannel.Listen("OpenSettings", () => Dispatcher.BeginInvoke(SettingsWindow.ShowSingleton));
+        CommandChannel.Listen("EditWidgets", () => Dispatcher.BeginInvoke(() =>
+        {
+            if (!Services.MacWidgetIntegration.OpenEditor(out var failure))
+                Log.Write("MacWidget editor launch skipped: " + failure);
+        }));
         CommandChannel.Listen("ToggleStacks", () => Dispatcher.BeginInvoke(() =>
         {
             Config.UseStacks = !Config.UseStacks;
@@ -981,6 +986,7 @@ public partial class MainWindow : Window
     /// 加呼吸边后只留与本窗相交的。</summary>
     private List<Rect> AvoidRectsLocal()
     {
+        if (!Config.WidgetAvoidance) return _noAvoid;
         var src = Services.WidgetAvoid.Rects;
         if (src.Count == 0) return _noAvoid;
         var res = new List<Rect>();

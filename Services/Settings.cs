@@ -76,6 +76,10 @@ internal sealed class Settings
     /// 弹它自己的现代/经典菜单）；此时按住 Alt 再右键才出 MacDesk 自制菜单。默认关。</summary>
     public bool NativeBackgroundMenu { get; set; }
 
+    /// <summary>MacWidget 联动：收到组件占用矩形时仅在显示层让开图标，不改 Canon 布局；
+    /// 关闭或 MacWidget 退出后立即按原布局回位。默认关，避免新装升级时意外挪动图标。</summary>
+    public bool WidgetAvoidance { get; set; }
+
     /// <summary>图标尺寸（base 图标 DIU，缩放因子 S = IconSize/64）。档位见 MainWindow.IconSizeSteps，
     /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
     public int IconSize { get; set; } = 64;
@@ -159,6 +163,7 @@ internal sealed class Settings
                     s.Language = lg.GetString()!;
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
+                if (doc.RootElement.TryGetProperty("WidgetAvoidance", out var wa)) s.WidgetAvoidance = wa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
                 if (doc.RootElement.TryGetProperty("FirstRowSink", out var rs)) s.FirstRowSink = rs.GetBoolean();
                 if (doc.RootElement.TryGetProperty("RenderMode", out var rm) && rm.ValueKind == JsonValueKind.String)
@@ -181,7 +186,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, WidgetAvoidance, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

@@ -58,6 +58,18 @@ public static class WidgetAvoid
 
     private static void Set(List<System.Windows.Rect> list)
     {
+        // WidgetProto 每 3 秒送一次心跳，拖拽结束后矩形会原样重复。相同快照不应触发
+        // 全桌面 LayoutAll（否则空闲时也会不断重排/重启动画）；断开清空仍会变化一次。
+        var old = _rects;
+        if (old.Count == list.Count)
+        {
+            bool same = true;
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (old[i] != list[i]) { same = false; break; }
+            }
+            if (same) return;
+        }
         _rects = list;
         try { Changed?.Invoke(); } catch { /* 订阅者异常不掀桌 */ }
     }

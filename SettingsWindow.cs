@@ -135,6 +135,7 @@ internal sealed class SettingsWindow : Window
         {
             ("⚙️", "general", L.T("通用", "General")),
             ("🖥️", "desktop", L.T("桌面", "Desktop")),
+            ("🧩", "widgets", L.T("小组件", "Widgets")),
             ("🎨", "appearance", L.T("外观", "Appearance")),
             ("📋", "menu", L.T("右键菜单", "Context Menu")),
             ("🛠️", "advanced", L.T("高级", "Advanced")),
@@ -162,7 +163,11 @@ internal sealed class SettingsWindow : Window
 
         // 重获焦点时若停在外观页就重建：让图标大小滑杆/强调色同步 Ctrl+/- 等外部改动
         // （只在外观页做——该页无文本输入框，重建无副作用；菜单页有黑名单输入框不能重建）。
-        Activated += (_, _) => { if ((_nav.SelectedItem as ListBoxItem)?.Tag as string == "appearance") ShowPage("appearance"); };
+        Activated += (_, _) =>
+        {
+            var key = (_nav.SelectedItem as ListBoxItem)?.Tag as string;
+            if (key is "appearance" or "widgets") ShowPage(key);
+        };
     }
 
     private Style NavItemStyle()
@@ -193,6 +198,7 @@ internal sealed class SettingsWindow : Window
     private void ShowPage(string key) => _page.Content = key switch
     {
         "desktop" => BuildDesktop(),
+        "widgets" => BuildWidgets(),
         "appearance" => BuildAppearance(),
         "menu" => BuildMenuPage(),
         "advanced" => BuildAdvanced(),
@@ -555,6 +561,66 @@ internal sealed class SettingsWindow : Window
             L.T("重启 MacDesk 生效", "Takes effect after restarting MacDesk")));
         p.Children.Add(Card(interact));
 
+        return p;
+    }
+
+    // ── 桌面 ──────────────────────────────────────────────────
+
+    // ── 小组件 ────────────────────────────────────────────────
+
+    private UIElement BuildWidgets()
+    {
+        var p = Page(L.T("小组件", "Widgets"));
+        var install = Services.MacWidgetIntegration.Detect();
+
+        p.Children.Add(Section(L.T("MacWidget 联动", "MacWidget Integration")));
+        var integration = new StackPanel();
+        string state = install.Detected
+            ? install.IsRunning
+                ? L.T("已检测到，正在运行", "Detected and running")
+                : L.T("已检测到安装，当前未运行", "Installed; not currently running")
+            : L.T("未检测到 MacWidget", "MacWidget was not detected");
+        if (install.IsPrototype) state += L.T("（开发原型）", " (development prototype)");
+        integration.Children.Add(Row(L.T("MacWidget", "MacWidget"),
+            new TextBlock { Text = state, FontSize = 12, Foreground = install.Detected ? TextFg : Subtle },
+            L.T("检测正式 MacWidget 安装，也兼容当前的 WidgetProto 开发副本。打开本页或重新获得焦点时会刷新检测结果。",
+                "Detects the installed MacWidget app and the current WidgetProto development build. The status refreshes when this page regains focus.")));
+        integration.Children.Add(Separator());
+
+        var avoidance = Toggle(Config.WidgetAvoidance, v =>
+        {
+            Config.WidgetAvoidance = v;
+            Config.Save();
+            Desktop.LayoutAllWindows(animated: true);
+        });
+        avoidance.IsEnabled = install.Detected;
+        avoidance.Opacity = install.Detected ? 1 : 0.45;
+        integration.Children.Add(Row(L.T("避让小组件", "Avoid Widgets"), avoidance,
+            install.Detected
+                ? L.T("让桌面图标在显示层避开 MacWidget；不会改动保存的图标布局，关闭或移走组件后自动回位。",
+                    "Moves icons away from MacWidget only in the display layer. Your saved icon layout is never changed and restores automatically when disabled or when widgets move away.")
+                : L.T("安装并运行 MacWidget 后可开启。", "Install MacWidget to enable this option.")));
+        integration.Children.Add(Separator());
+        var edit = new Button { Content = L.T("编辑小组件…", "Edit Widgets…"), Padding = new Thickness(14, 4, 14, 4), IsEnabled = install.Detected };
+        edit.Click += (_, _) =>
+        {
+            if (!Services.MacWidgetIntegration.OpenEditor(out var failure))
+                MessageBox.Show(L.T("无法打开 MacWidget 组件库：", "Could not open the MacWidget gallery: ") + failure,
+                    "MacDesk", MessageBoxButton.OK, MessageBoxImage.Warning);
+        };
+        integration.Children.Add(Row(L.T("组件库", "Widget Gallery"), edit,
+            L.T("也可从桌面空白处右键菜单选择「编辑小组件…」。", "You can also use Edit Widgets… in the empty-desktop context menu.")));
+        p.Children.Add(Card(integration));
+
+        p.Children.Add(new TextBlock
+        {
+            Text = L.T("提示：若在「右键菜单」中启用了 Windows 原生空白处菜单，请按住 Alt 再右键打开 MacDesk 菜单，其中会显示「编辑小组件…」。",
+                "Tip: if Native Windows Menu on Empty Desktop is enabled under Context Menu, hold Alt while right-clicking to open the MacDesk menu, which contains Edit Widgets…"),
+            FontSize = 11,
+            Foreground = Subtle,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(4, 0, 4, 0),
+        });
         return p;
     }
 
