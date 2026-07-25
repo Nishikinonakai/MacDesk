@@ -126,6 +126,7 @@ internal static class MacWidgetIntegration
             Path.Combine(local, "Programs", "MacWidget", "MacWidget.exe"),
             Path.Combine(local, "Programs", "MacWidget", "WidgetProto.exe"),
             Path.Combine(programFiles, "MacWidget", "MacWidget.exe"),
+            Path.Combine(@"C:\\work\\widgetproto\\app", "MacWidget.exe"),
             Path.Combine(@"C:\\work\\widgetproto\\app", "WidgetProto.exe"),
         }) yield return path;
     }
