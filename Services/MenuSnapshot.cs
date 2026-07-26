@@ -53,6 +53,9 @@ internal static class MenuSnapshot
         /// <summary>捕获时的菜单位置（仅 host 侧图标稳定化重读用；不序列化）。
         /// 用它而非 list 索引，因 GetMenuItemInfoW 失败时 Capture 会跳过该位不入 list，索引会错位。</summary>
         [JsonIgnore] public int Pos { get; set; }
+
+        /// <summary>自绘项的像素不可转存，已使用文本兜底；仅 host 侧用于补充已知来源名。</summary>
+        [JsonIgnore] public bool OwnerDrawFallback { get; set; }
     }
 
     public static string ToJson(List<Item> items) => JsonSerializer.Serialize(items);
@@ -64,6 +67,7 @@ internal static class MenuSnapshot
                        MIIM_STRING = 0x40, MIIM_BITMAP = 0x80, MIIM_FTYPE = 0x100;
     private const uint MFT_OWNERDRAW = 0x100, MFT_RADIOCHECK = 0x200, MFT_SEPARATOR = 0x800;
     private const uint MFS_DISABLED = 0x3, MFS_CHECKED = 0x8, MFS_DEFAULT = 0x1000;
+    private const uint GCS_VERBW = 0x4, GCS_HELPTEXTW = 0x5;
     private const uint ODS_SELECTED = 0x1;
     private const int WM_DRAWITEM = 0x2B, WM_MEASUREITEM = 0x2C, WM_INITMENUPOPUP = 0x117;
     private const int COLOR_MENU = 4;
@@ -110,6 +114,7 @@ internal static class MenuSnapshot
     [DllImport("user32.dll")] internal static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll")] internal static extern bool DestroyMenu(IntPtr hMenu);
     [DllImport("user32.dll")] private static extern IntPtr GetSysColorBrush(int nIndex);
+    [DllImport("user32.dll")] private static extern uint GetSysColor(int nIndex);
     [DllImport("user32.dll")] private static extern int FillRect(IntPtr hDC, ref Interop.Native.RECT lprc, IntPtr hbr);
     [DllImport("gdi32.dll")] private static extern int GetObjectW(IntPtr h, int c, out BITMAP pv);
     [DllImport("gdi32.dll")] private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
@@ -177,6 +182,7 @@ internal static class MenuSnapshot
             {
                 it.OwnerDraw = true;
                 RenderOwnerDraw(menuObj, hMenu, mii.wID, mii.dwItemData, it);
+                RecoverOwnerDrawText(menuObj, mii.wID, it);
             }
             else if (mii.hbmpItem != IntPtr.Zero && (long)mii.hbmpItem > 11) // 排除 HBMMENU_* 常量（-1、1..11）
             {
@@ -191,6 +197,7 @@ internal static class MenuSnapshot
 
             list.Add(it);
         }
+        LabelKnownOwnerDrawFallbacks(list);
         RestoreIconsFromCache(list);  // 先回填历史见过的图标（缩小稳定化等待面 + 治随机丢的主力）
         StabilizeIcons(hMenu, list);  // 仍缺的泵消息等异步加载（顺带把新图标喂进缓存）
         StoreIconsToCache(list);      // 这轮捕到的（含刚等到的）存缓存，供下次回填
@@ -352,6 +359,97 @@ internal static class MenuSnapshot
         }
         catch (Exception ex) { Log.Write($"ownerdraw capture failed id={id}: {ex.Message}"); }
     }
+
+    /// <summary>
+    /// 某些扩展（Bandizip 是一例）把唯一的菜单标题完全画在 WM_DRAWITEM 中。若扩展拒绝
+    /// 离屏绘制，快照虽仍有命令 ID，却只会重建成一条可点击的空白行。优先保留确实有内容
+    /// 的像素；否则改用扩展公开的帮助文本/动词，最后给出明确的通用名称。
+    /// </summary>
+    private static void RecoverOwnerDrawText(object menuObj, uint id, Item it)
+    {
+        if (HasOwnerDrawContent(it.OdNormal)) return;
+
+        it.OdNormal = null;
+        it.OdSelected = null;
+        it.OdW = 0;
+        it.OdH = 0;
+
+        if (string.IsNullOrWhiteSpace(it.Text))
+            it.Text = GetCommandText(menuObj, id) ?? L.T("第三方扩展命令", "Shell extension command");
+        it.OwnerDrawFallback = true;
+
+        Log.Write($"ownerdraw fallback id={id}: \"{it.Text}\"");
+    }
+
+    /// <summary>
+    /// IContextMenu 没有逐项返回“所属扩展”的元数据，不能靠猜测给任意 owner-draw 项冠名。
+    /// 这里只处理紧邻 Bandizip 明确品牌项的兜底行：品牌名来自同一扩展自己的可见菜单文本，
+    /// 且限制在两项内，避免把同一菜单里不相干扩展误标成 Bandizip。
+    /// </summary>
+    private static void LabelKnownOwnerDrawFallbacks(List<Item> items)
+    {
+        for (int i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (!it.OwnerDrawFallback) continue;
+
+            bool bandizipNearby = false;
+            for (int j = Math.Max(0, i - 2); j <= Math.Min(items.Count - 1, i + 2); j++)
+                if (items[j].Text.Contains("Bandizip", StringComparison.OrdinalIgnoreCase))
+                {
+                    bandizipNearby = true;
+                    break;
+                }
+
+            if (!bandizipNearby) continue;
+            it.Text = "Bandizip…";
+            Log.Write($"ownerdraw fallback id={it.Id}: identified Bandizip from neighboring menu item");
+        }
+    }
+
+    /// <summary>离屏 DC 先填 COLOR_MENU；整张图仍是该底色即表示扩展实际上没有画出内容。</summary>
+    private static bool HasOwnerDrawContent(byte[]? bits)
+    {
+        if (bits == null || bits.Length < 4) return false;
+        uint color = GetSysColor(COLOR_MENU); // COLORREF = 0x00bbggrr，DIB 是 BGRA
+        byte r = (byte)color, g = (byte)(color >> 8), b = (byte)(color >> 16);
+        for (int p = 0; p + 3 < bits.Length; p += 4)
+            if (Math.Abs(bits[p] - b) > 2 || Math.Abs(bits[p + 1] - g) > 2 || Math.Abs(bits[p + 2] - r) > 2)
+                return true;
+        return false;
+    }
+
+    private static string? GetCommandText(object menuObj, uint id)
+    {
+        if (id == 0) return null;
+        const int cch = 512;
+        IntPtr buffer = Marshal.AllocHGlobal(cch * sizeof(char));
+        try
+        {
+            // Help text is normally user-facing; verb is still more useful than a blank row when it is not provided.
+            foreach (uint kind in new[] { GCS_HELPTEXTW, GCS_VERBW })
+            {
+                Marshal.WriteInt16(buffer, 0);
+                if (GetCommandString(menuObj, (UIntPtr)(id - 1), kind, buffer, cch) >= 0)
+                {
+                    string text = (Marshal.PtrToStringUni(buffer) ?? "").Trim();
+                    if (text.Length > 0) return text;
+                }
+            }
+        }
+        catch (Exception ex) { Log.Write($"ownerdraw command text failed id={id}: {ex.Message}"); }
+        finally { Marshal.FreeHGlobal(buffer); }
+        return null;
+    }
+
+    private static int GetCommandString(object menuObj, UIntPtr offset, uint kind, IntPtr buffer, int cch) =>
+        menuObj switch
+        {
+            Interop.ShellCom.IContextMenu3 cm3 => cm3.GetCommandString(offset, kind, IntPtr.Zero, buffer, (uint)cch),
+            Interop.ShellCom.IContextMenu2 cm2 => cm2.GetCommandString(offset, kind, IntPtr.Zero, buffer, (uint)cch),
+            Interop.ShellCom.IContextMenu cm => cm.GetCommandString(offset, kind, IntPtr.Zero, buffer, (uint)cch),
+            _ => unchecked((int)0x80004002), // E_NOINTERFACE
+        };
 
     private static byte[]? RenderState(object menuObj, IntPtr hMenu, uint id, IntPtr itemData, int w, int h, uint state)
     {
