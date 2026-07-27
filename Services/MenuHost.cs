@@ -164,41 +164,98 @@ internal static class MenuHost
 
     private static void RequestCoreV2(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
     {
-        // 阶梯耐心同旧版：host 忙（探针/上一个菜单）≠ 死，只有进程真没了才重拉
-        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 1500)) return;
-        if (HostIsBuilding())
+        // 先看 building 事件再碰管道：host 卡在上一条请求时没有空闲 server 接连接，
+        // 若反过来做，每次右键都会稳定白等 Connect(1500ms) 才走降级菜单。
+        if (TryHandleBusyHost(verb, x, y, desktopHwnd, paths)) return;
+
+        // 首次检查与连接之间仍可能开始构建，连接失败后再检查一次兜住这个竞态。
+        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 1500))
         {
-            // host 正卡在文件夹菜单构建里。2026-07-11 真机取证：这不是慢扩展在暖机，而是
-            // host 启动竞态偶发把 shell（windows.storage）内部工作线程锁死（WCT 实锤进程内
-            // SendMessage 死链，杀外部进程无解，5min+ 永不完成）——"带毒出生"的 host 等不好。
-            // 策略：短期内降级出菜单顶着（万一是有限慢构建）；持续超 90s 判定带毒，处决重拉
-            // （新 host 重掷骰子，通常即恢复）。
-            _buildingSince ??= DateTime.UtcNow;
-            if (DateTime.UtcNow - _buildingSince < TimeSpan.FromSeconds(90))
-            {
-                Log.Write("menu v2: host busy building, fallback menu while it tries to finish");
-                ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
-                return;
-            }
-            Log.Write("menu v2: host stuck building >90s (poisoned shell worker), executing it");
-            lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
-            _buildingSince = null;
-            EnsureSpawned();
-            if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000)) return;
-            ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+            ClearBuildingObservationIfIdle();
             return;
         }
-        _buildingSince = null;
+        if (TryHandleBusyHost(verb, x, y, desktopHwnd, paths)) return;
+
+        ClearBuildingObservation();
         bool alive;
         lock (_lock) alive = _host is { HasExited: false };
-        if (alive && TryExchangeV2(verb, x, y, desktopHwnd, paths, 4000)) return;
+        if (alive && TryExchangeV2(verb, x, y, desktopHwnd, paths, 4000))
+        {
+            ClearBuildingObservationIfIdle();
+            return;
+        }
         Log.Write("menu host (v2) unreachable, respawning");
         lock (_lock) { try { _host?.Kill(); } catch { } _host = null; }
         EnsureSpawned();
-        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000)) return;
+        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000))
+        {
+            ClearBuildingObservationIfIdle();
+            return;
+        }
         // 双保险：退化为旧的一次性子进程（host 内 track，settle-wait 路径）
         Log.Write("menu host (v2) still unreachable, falling back to one-shot helper");
         FallbackOneShot(verb, x, y, paths);
+    }
+
+    /// <summary>
+    /// host 正在处理上一条构建请求时即时显示本地菜单；持续卡住则重拉 host。
+    /// 返回 true 表示本次请求已处理，调用方不得再连接同一条忙管道。
+    /// </summary>
+    private static bool TryHandleBusyHost(string verb, int x, int y, IntPtr desktopHwnd, string[] paths)
+    {
+        if (!HostIsBuilding()) return false;
+
+        bool restart;
+        lock (_lock)
+        {
+            _buildingSince ??= DateTime.UtcNow;
+            restart = DateTime.UtcNow - _buildingSince >= TimeSpan.FromSeconds(90);
+            if (restart)
+            {
+                try { _host?.Kill(); } catch { }
+                _host = null;
+                _buildingSince = null;
+            }
+        }
+
+        if (!restart)
+        {
+            Log.Write("menu v2: host busy building, immediate fallback");
+            ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+            return true;
+        }
+
+        // 2026-07-11 真机取证：windows.storage 工作线程偶发形成进程内 SendMessage 死链，
+        // 5min+ 永不完成。90s 后重掷一个 host；失败也立即给本地菜单，不拖住桌面。
+        Log.Write("menu v2: host stuck building >90s (poisoned shell worker), executing it");
+        EnsureSpawned();
+        if (TryExchangeV2(verb, x, y, desktopHwnd, paths, 5000))
+        {
+            ClearBuildingObservationIfIdle();
+            return true;
+        }
+        ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
+        return true;
+    }
+
+    private static void ClearBuildingObservation()
+    {
+        lock (_lock) _buildingSince = null;
+    }
+
+    private static void MarkBuildingObserved()
+    {
+        lock (_lock) _buildingSince ??= DateTime.UtcNow;
+    }
+
+    private static void ClearBuildingObservationIfIdle()
+    {
+        if (HostIsBuilding()) return;
+        lock (_lock)
+        {
+            // 首次检查后另一条请求仍可能抢先进入构建；别抹掉它的卡住计时。
+            if (!HostIsBuilding()) _buildingSince = null;
+        }
     }
 
     private static bool TryExchangeV2(string verb, int x, int y, IntPtr desktopHwnd, string[] paths, int timeoutMs)
@@ -216,6 +273,7 @@ internal static class MenuHost
                 // 冷启动的第三方扩展能把 QueryContextMenu 卡 40s~2min+（黑盒内不可中断）。
                 // 封顶等待：降级出菜单、弃掉这条管道，但不杀 host——它熬完这一次全机变暖，
                 // 下次右键即恢复全量原生菜单（host 侧 WriteFrame 失败由其循环兜住）。
+                MarkBuildingObserved(); // 从首次超时开始计时；隔很久再右键可直接触发 90s 清毒
                 Log.Write($"menu v2: no reply in {BuildWaitMs}ms (ext cold start?), fallback; host keeps building");
                 try { pipe.Dispose(); } catch { }
                 ShowFallbackMenu(verb, x, y, desktopHwnd, paths);
@@ -277,9 +335,9 @@ internal static class MenuHost
 
     // ── 慢构建兜底（第三方扩展冷启动） ─────────────────────────
 
-    /// <summary>构建应答的封顶等待。合法慢构建实测 ≤2s（含按需探针），带毒 host 卡死 ≥40s~∞，
-    /// 两个量级之间取 8s：宁可多等一会也不误降级。</summary>
-    private const int BuildWaitMs = 8000;
+    /// <summary>构建应答的封顶等待。正常构建实测 ≤2s（通常 0.3–0.9s）；超过 2.5s 先给本地菜单，
+    /// host 仍在后台完成，不因单个 shell 扩展拖慢桌面交互。</summary>
+    private const int BuildWaitMs = 2500;
     private const string BuildingEventName = "MacDesk.MenuHost.Building";
 
     /// <summary>首次观察到 host 处于构建态的时刻（跨请求跟踪"卡死多久了"，见 RequestCoreV2）。</summary>
