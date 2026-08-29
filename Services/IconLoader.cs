@@ -24,6 +24,9 @@ internal static class IconLoader
     {
         ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".heic", ".tif", ".tiff", ".svg",
         ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".pdf",
+        ".doc", ".docx", ".docm", ".dot", ".dotx", ".dotm",
+        ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".xltm",
+        ".ppt", ".pptx", ".pptm", ".pps", ".ppsx", ".ppsm", ".pot", ".potx", ".potm",
     };
 
     private static readonly Dictionary<string, ImageSource?> _shared = new(StringComparer.OrdinalIgnoreCase);

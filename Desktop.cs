@@ -129,11 +129,29 @@ internal static class Desktop
         return owner == null ? null : Layout.Get(owner, name);
     }
 
-    /// <summary>该图标应该显示在哪个窗口：归属在场给归属，否则主屏。</summary>
+    /// <summary>该图标应该显示在哪个窗口。显示范围是 display-only 策略：不会迁移规范归属，
+    /// 切回所有显示器后图标会回到原来的物理屏位置。</summary>
     private static string EffectiveWindowKey(string name)
     {
         var owner = Layout.FindOwner(name);
-        return owner != null && _attachedKeys.Contains(owner) ? owner : PrimaryKey;
+        return ResolveWindowKey(owner, PrimaryKey, _attachedKeys, Monitors.Select(m => m.Key).ToList(),
+            Config.DisplayScope, Config.SelectedMonitors);
+    }
+
+    /// <summary>纯路由策略，参数化显示器集合以便在没有多屏硬件时覆盖分配行为。</summary>
+    internal static string ResolveWindowKey(string? owner, string primaryKey,
+        IReadOnlyCollection<string> attachedKeys, IReadOnlyList<string> monitorKeys,
+        string displayScope, IReadOnlyCollection<string> selectedMonitors)
+    {
+        if (displayScope == "primary") return primaryKey;
+        if (displayScope == "selected")
+        {
+            var selected = monitorKeys.Where(m => selectedMonitors.Contains(m, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (selected.Count == 0) return primaryKey; // 所选屏均离线/配置为空：主屏安全兜底
+            if (owner != null && selected.Contains(owner, StringComparer.OrdinalIgnoreCase)) return owner;
+            return selected.Contains(primaryKey, StringComparer.OrdinalIgnoreCase) ? primaryKey : selected[0];
+        }
+        return owner != null && attachedKeys.Contains(owner, StringComparer.OrdinalIgnoreCase) ? owner : primaryKey;
     }
 
     /// <summary>全量刷新：枚举一次，按归属分发给各窗口。"导入布局"记名的 missing 项
@@ -220,6 +238,14 @@ internal static class Desktop
         foreach (var w in Windows) if (w.Attached) w.TearDownVisuals();
         RefreshAll();
         LayoutAllWindows(animated: true);
+    }
+
+    /// <summary>字体等纯视觉设置变化：重建图标视觉，规范布局保持不动。</summary>
+    public static void RebuildVisuals()
+    {
+        foreach (var w in Windows) if (w.Attached) w.TearDownVisuals();
+        RefreshAll();
+        LayoutAllWindows(animated: false);
     }
 
 }

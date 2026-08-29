@@ -80,9 +80,26 @@ internal sealed class Settings
     /// 关闭或 MacWidget 退出后立即按原布局回位。默认关，避免新装升级时意外挪动图标。</summary>
     public bool WidgetAvoidance { get; set; }
 
+    /// <summary>MacWidget 单色模式偏好：auto（自动）| mono（单色）| full（彩色）。
+    /// MacDesk 只持久化并通过可选联动协议通知 MacWidget；对端缺席或版本较旧时不影响桌面层。</summary>
+    public string WidgetMonoMode { get; set; } = "auto";
+
+    /// <summary>桌面图标显示范围：all（所有显示器）| primary（仅 Windows 主显示器）|
+    /// selected（指定显示器）。只影响现场分发，不迁移 layout.json 中的规范归属。</summary>
+    public string DisplayScope { get; set; } = "all";
+
+    /// <summary>DisplayScope=selected 时允许显示图标的显示器稳定 key（EDID）。</summary>
+    public List<string> SelectedMonitors { get; set; } = new();
+
     /// <summary>图标尺寸（base 图标 DIU，缩放因子 S = IconSize/64）。档位见 MainWindow.IconSizeSteps，
     /// 默认 64。Ctrl +/- 与外观页滑杆调整；不写 Canon（切档=切分辨率同理，仅显示现算）。</summary>
     public int IconSize { get; set; } = 64;
+
+    /// <summary>桌面图标标签字体。从 Windows 已安装字体列表选择；无效名称由 WPF 自动回退。</summary>
+    public string IconFontFamily { get; set; } = "Segoe UI";
+
+    /// <summary>桌面图标标签字重：regular | semibold | bold。默认保留旧版 bold 观感。</summary>
+    public string IconFontWeight { get; set; } = "bold";
 
     /// <summary>首行下沉：显示网格整体下移默认档半行（56 DIU），给第三方顶部菜单栏类软件
     /// 让出空间，吸顶窗口不再压住首行图标。纯显示层偏移（见 MainWindow.SinkY），不写 Canon，
@@ -164,7 +181,20 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("WidgetAvoidance", out var wa)) s.WidgetAvoidance = wa.GetBoolean();
+                if (doc.RootElement.TryGetProperty("WidgetMonoMode", out var wm) && wm.ValueKind == JsonValueKind.String)
+                    s.WidgetMonoMode = wm.GetString()!;
+                if (doc.RootElement.TryGetProperty("DisplayScope", out var ds) && ds.ValueKind == JsonValueKind.String)
+                    s.DisplayScope = ds.GetString()!;
+                if (doc.RootElement.TryGetProperty("SelectedMonitors", out var sm) && sm.ValueKind == JsonValueKind.Array)
+                    s.SelectedMonitors = sm.EnumerateArray()
+                        .Where(e => e.ValueKind == JsonValueKind.String)
+                        .Select(e => e.GetString()!)
+                        .ToList();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
+                if (doc.RootElement.TryGetProperty("IconFontFamily", out var iff) && iff.ValueKind == JsonValueKind.String)
+                    s.IconFontFamily = iff.GetString()!;
+                if (doc.RootElement.TryGetProperty("IconFontWeight", out var ifw) && ifw.ValueKind == JsonValueKind.String)
+                    s.IconFontWeight = ifw.GetString()!;
                 if (doc.RootElement.TryGetProperty("FirstRowSink", out var rs)) s.FirstRowSink = rs.GetBoolean();
                 if (doc.RootElement.TryGetProperty("RenderMode", out var rm) && rm.ValueKind == JsonValueKind.String)
                     s.RenderMode = rm.GetString()!;
@@ -178,6 +208,12 @@ internal sealed class Settings
             }
         }
         catch { }
+        if (s.WidgetMonoMode is not ("auto" or "mono" or "full")) s.WidgetMonoMode = "auto";
+        if (s.DisplayScope is not ("all" or "primary" or "selected")) s.DisplayScope = "all";
+        if (s.IconFontWeight is not ("regular" or "semibold" or "bold")) s.IconFontWeight = "bold";
+        if (string.IsNullOrWhiteSpace(s.IconFontFamily) ||
+            string.Equals(s.IconFontFamily, "Segoe UI, Microsoft YaHei UI", StringComparison.OrdinalIgnoreCase))
+            s.IconFontFamily = "Segoe UI";
         return s;
     }
 
@@ -186,7 +222,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, WidgetAvoidance, IconSize, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

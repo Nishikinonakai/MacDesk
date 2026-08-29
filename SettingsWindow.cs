@@ -601,6 +601,67 @@ internal sealed class SettingsWindow : Window
                     "Moves icons away from MacWidget only in the display layer. Your saved icon layout is never changed and restores automatically when disabled or when widgets move away.")
                 : L.T("安装并运行 MacWidget 后可开启。", "Install MacWidget to enable this option.")));
         integration.Children.Add(Separator());
+
+        var monoButtons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        var monoStatus = new TextBlock
+        {
+            FontSize = 11,
+            Foreground = Subtle,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 250,
+            Margin = new Thickness(0, 3, 0, 0),
+        };
+        var monoChoices = new[]
+        {
+            (Key: "auto", Zh: "自动", En: "Auto"),
+            (Key: "mono", Zh: "单色", En: "Mono"),
+            (Key: "full", Zh: "彩色", En: "Color"),
+        };
+        void PaintMonoButtons()
+        {
+            for (int i = 0; i < monoButtons.Children.Count; i++)
+            {
+                var b = (Button)monoButtons.Children[i];
+                bool active = monoChoices[i].Key == Config.WidgetMonoMode;
+                b.Background = active ? new SolidColorBrush(Accent.Current) : ButtonBg;
+                b.Foreground = active ? Brushes.White : TextFg;
+            }
+        }
+        foreach (var choice in monoChoices)
+        {
+            var b = new Button
+            {
+                Content = L.T(choice.Zh, choice.En),
+                MinWidth = 58,
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = monoButtons.Children.Count == 0
+                    ? new Thickness(0)
+                    : new Thickness(6, 0, 0, 0),
+            };
+            string mode = choice.Key;
+            b.Click += (_, _) =>
+            {
+                Config.WidgetMonoMode = mode;
+                Config.Save();
+                PaintMonoButtons();
+                monoStatus.Text = MacWidgetIntegration.ApplyMonoMode(mode, out var failure)
+                    ? L.T("已保存。", "Saved.")
+                    : failure ?? L.T("切换失败。", "Could not apply the mode.");
+            };
+            monoButtons.Children.Add(b);
+        }
+        PaintMonoButtons();
+        var monoControl = new StackPanel { Width = 250 };
+        monoControl.Children.Add(monoButtons);
+        monoControl.Children.Add(monoStatus);
+        integration.Children.Add(Row("Mono Mode", monoControl,
+            L.T("自动：有普通窗口时单色、只显示桌面时彩色；也可强制单色或彩色。默认自动。",
+                "Auto: monochrome while regular windows are open, color on a clear desktop; or force either mode. Defaults to Auto.")));
+        integration.Children.Add(Separator());
         var edit = new Button { Content = L.T("编辑小组件…", "Edit Widgets…"), Padding = new Thickness(14, 4, 14, 4), IsEnabled = install.Detected };
         edit.Click += (_, _) =>
         {
@@ -629,6 +690,63 @@ internal sealed class SettingsWindow : Window
     private UIElement BuildDesktop()
     {
         var p = Page(L.T("桌面", "Desktop"));
+
+        p.Children.Add(Section(L.T("显示器", "Displays")));
+        var display = new StackPanel();
+        var scopeBox = new ComboBox { Width = 170, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
+        var scopeKeys = new[] { "all", "primary", "selected" };
+        scopeBox.Items.Add(L.T("所有显示器", "All Displays"));
+        scopeBox.Items.Add(L.T("仅主显示器", "Primary Display Only"));
+        scopeBox.Items.Add(L.T("指定显示器…", "Selected Displays…"));
+        scopeBox.SelectedIndex = Math.Max(0, Array.IndexOf(scopeKeys, Config.DisplayScope));
+        var monitorList = new StackPanel { Margin = new Thickness(12, 0, 0, 4) };
+        void ApplyDisplayScope()
+        {
+            Config.Save();
+            Desktop.RefreshAll();
+            Desktop.LayoutAllWindows(animated: true);
+        }
+        void RefreshMonitorList()
+        {
+            monitorList.Children.Clear();
+            bool enabled = Config.DisplayScope == "selected";
+            monitorList.IsEnabled = enabled;
+            monitorList.Opacity = enabled ? 1 : 0.45;
+            for (int i = 0; i < Desktop.Monitors.Count; i++)
+            {
+                var mon = Desktop.Monitors[i];
+                var toggle = Toggle(Config.SelectedMonitors.Contains(mon.Key, StringComparer.OrdinalIgnoreCase), on =>
+                {
+                    if (on)
+                    {
+                        if (!Config.SelectedMonitors.Contains(mon.Key, StringComparer.OrdinalIgnoreCase))
+                            Config.SelectedMonitors.Add(mon.Key);
+                    }
+                    else Config.SelectedMonitors.RemoveAll(k => string.Equals(k, mon.Key, StringComparison.OrdinalIgnoreCase));
+                    ApplyDisplayScope();
+                });
+                string name = $"{i + 1}. {mon.Device.Replace(@"\\.\", "")}" +
+                    (mon.IsPrimary ? L.T("（主显示器）", " (Primary)") : "");
+                monitorList.Children.Add(Row(name, toggle, mon.Key));
+            }
+        }
+        scopeBox.SelectionChanged += (_, _) =>
+        {
+            if (scopeBox.SelectedIndex < 0) return;
+            Config.DisplayScope = scopeKeys[scopeBox.SelectedIndex];
+            if (Config.DisplayScope == "selected" &&
+                !Desktop.Monitors.Any(m => Config.SelectedMonitors.Contains(m.Key, StringComparer.OrdinalIgnoreCase)))
+                Config.SelectedMonitors.Add(Desktop.PrimaryKey);
+            RefreshMonitorList();
+            ApplyDisplayScope();
+        };
+        display.Children.Add(Row(L.T("图标显示范围", "Icon Display Scope"), scopeBox,
+            L.T("只改变当前显示位置，不迁移已保存的每屏布局；恢复“所有显示器”后图标回到原屏。",
+                "Changes only the current presentation, not the saved per-display layout; switching back to All Displays restores each icon to its original display.")));
+        display.Children.Add(Separator());
+        RefreshMonitorList();
+        display.Children.Add(monitorList);
+        p.Children.Add(Card(display));
 
         p.Children.Add(Section(L.T("布局", "Layout")));
         var layout = new StackPanel();
@@ -810,6 +928,52 @@ internal sealed class SettingsWindow : Window
         var sizeSec = new StackPanel();
         sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
             L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
+        sizeSec.Children.Add(Separator());
+        var fontBox = new ComboBox
+        {
+            Width = 220,
+            Background = FieldBg,
+            Foreground = TextFg,
+            BorderBrush = FieldBorder,
+        };
+        var fontNames = Fonts.SystemFontFamilies
+            .Select(f => f.Source)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        foreach (var name in fontNames) fontBox.Items.Add(name);
+        int fontIndex = fontNames.FindIndex(n => string.Equals(n, Config.IconFontFamily, StringComparison.CurrentCultureIgnoreCase));
+        if (fontIndex < 0) fontIndex = fontNames.FindIndex(n => string.Equals(n, "Segoe UI", StringComparison.OrdinalIgnoreCase));
+        fontBox.SelectedIndex = Math.Max(0, fontIndex);
+        fontBox.SelectionChanged += (_, _) =>
+        {
+            if (fontBox.SelectedItem is not string value ||
+                string.Equals(value, Config.IconFontFamily, StringComparison.CurrentCultureIgnoreCase)) return;
+            Config.IconFontFamily = value;
+            Config.Save();
+            Desktop.RebuildVisuals();
+        };
+        sizeSec.Children.Add(Row(L.T("标签字体", "Label Font"), fontBox,
+            L.T("读取 Windows 已安装字体；选择后立即应用。",
+                "Lists fonts installed in Windows; applies immediately when selected.")));
+        sizeSec.Children.Add(Separator());
+        var weightBox = new ComboBox { Width = 120, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
+        var weightKeys = new[] { "regular", "semibold", "bold" };
+        weightBox.Items.Add(L.T("常规", "Regular"));
+        weightBox.Items.Add(L.T("中等", "Semibold"));
+        weightBox.Items.Add(L.T("粗体", "Bold"));
+        weightBox.SelectedIndex = Math.Max(0, Array.IndexOf(weightKeys, Config.IconFontWeight));
+        weightBox.SelectionChanged += (_, _) =>
+        {
+            if (weightBox.SelectedIndex < 0) return;
+            string value = weightKeys[weightBox.SelectedIndex];
+            if (value == Config.IconFontWeight) return;
+            Config.IconFontWeight = value;
+            Config.Save();
+            Desktop.RebuildVisuals();
+        };
+        sizeSec.Children.Add(Row(L.T("标签字重", "Label Weight"), weightBox));
         p.Children.Add(Card(sizeSec));
 
         p.Children.Add(Section(L.T("颜色", "Color")));

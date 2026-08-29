@@ -46,7 +46,14 @@ public partial class MainWindow : Window
     private double GapX => 16 * S;
     private double GapY => 8 * S;
 
-    private static readonly FontFamily LabelFontFamily = new("Segoe UI, Microsoft YaHei UI");
+    private static FontFamily LabelFontFamily => new(string.IsNullOrWhiteSpace(Config.IconFontFamily)
+        ? "Segoe UI" : Config.IconFontFamily);
+    private static FontWeight LabelFontWeight => Config.IconFontWeight switch
+    {
+        "regular" => FontWeights.Regular,
+        "semibold" => FontWeights.SemiBold,
+        _ => FontWeights.Bold,
+    };
     // 裸边（该侧无任务栏）美学边距；Top/Right 同时是 Canon 锚距的坐标基准（CellToCanon/CanonToCell）。
     // 任务栏避让不再靠常量（旧 MarginBottom=60 按"48 栏+余量"拍死，真栏矮时白扣一截），
     // 改为现查工作区 rcWork 四边内缩——见"网格避让真实工作区"节。
@@ -636,7 +643,7 @@ public partial class MainWindow : Window
             Foreground = Brushes.White,
             FontSize = 12 * S,
             FontFamily = LabelFontFamily,
-            FontWeight = FontWeights.Bold,
+            FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
@@ -738,9 +745,8 @@ public partial class MainWindow : Window
             Text = labelText,
             Foreground = Brushes.White,
             FontSize = 12 * S,
-            // mac 质感：中英文都上 Bold（机主反馈 SemiBold 英文仍偏细；Windows 自带，免费合法）
             FontFamily = LabelFontFamily,
-            FontWeight = FontWeights.Bold,
+            FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
@@ -793,7 +799,7 @@ public partial class MainWindow : Window
     {
         var ft = new FormattedText(text,
             System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-            new Typeface(LabelFontFamily, FontStyles.Normal, FontWeights.Bold, FontStretches.Normal),
+            new Typeface(LabelFontFamily, FontStyles.Normal, LabelFontWeight, FontStretches.Normal),
             12 * S, Brushes.White, null, TextFormattingMode.Display,
             VisualTreeHelper.GetDpi(this).PixelsPerDip)
         {
@@ -1499,7 +1505,7 @@ public partial class MainWindow : Window
             Foreground = Brushes.White,
             FontSize = 12 * S,
             FontFamily = LabelFontFamily,
-            FontWeight = FontWeights.Bold,
+            FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
@@ -2113,7 +2119,7 @@ public partial class MainWindow : Window
             Foreground = Brushes.White,
             FontSize = 12 * S,
             FontFamily = LabelFontFamily,
-            FontWeight = FontWeights.Bold,
+            FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
@@ -3114,6 +3120,7 @@ public partial class MainWindow : Window
             Text = editText,
             FontSize = 12 * S,
             FontFamily = LabelFontFamily,
+            FontWeight = LabelFontWeight,
             MinWidth = 60 * S,
             MaxWidth = CellW + 40 * S,
             TextAlignment = TextAlignment.Center,
@@ -3536,7 +3543,11 @@ public partial class MainWindow : Window
             if (iv != null)
             {
                 iv.Canon = canon;
-                // 自由摆放瞬置（零漂移）；网格模式从落点滑行到吸附格（回归被误删的动画）
+                // Shell 拖拽图像在 Drop 后立即消失。网格模式若直接从原图标位置开动画，会先在
+                // 旧位置闪回一帧，再重复飞到目标格；先把真实图标放到拖拽图像的落点，再只播放
+                // 最后一小段吸格动画。自由摆放仍瞬置，保持零漂移。
+                if (!Config.FreePlacement && ctx != null)
+                    MoveElement(iv.Root, dl, dt, false, EaseGlide, GlideMs);
                 MoveIcon(iv, fl, ft, animated: !Config.FreePlacement);
             }
             else

@@ -12,6 +12,9 @@ namespace MacDesk.Services;
 internal static class MacWidgetIntegration
 {
     public const string EditWidgetsEventName = "MacWidget.Command.EditWidgets.v1";
+    private const string StyleAutoEventName = "MacWidget.Command.Style.Auto.v1";
+    private const string StyleMonoEventName = "MacWidget.Command.Style.Mono.v1";
+    private const string StyleFullEventName = "MacWidget.Command.Style.Full.v1";
 
     internal sealed record Installation(string? ExecutablePath, bool IsRunning, bool IsPrototype)
     {
@@ -43,29 +46,64 @@ internal static class MacWidgetIntegration
         var install = Detect();
         if (!install.Detected)
         {
-            failure = "MacWidget 未安装";
+            failure = L.T("MacWidget 未安装", "MacWidget is not installed");
             return false;
         }
 
         // 已运行却没有事件，通常是尚未升级到支持联动的旧版；绝不能再开第二组桌面组件。
         if (install.IsRunning)
         {
-            failure = "运行中的 MacWidget 版本尚不支持从 MacDesk 打开组件库";
+            failure = L.T(
+                "运行中的 MacWidget 版本尚不支持从 MacDesk 打开组件库",
+                "The running MacWidget version does not support opening the widget gallery from MacDesk");
             return false;
         }
 
         if (string.IsNullOrEmpty(install.ExecutablePath))
         {
-            failure = "未找到 MacWidget 可执行文件";
+            failure = L.T("未找到 MacWidget 可执行文件", "The MacWidget executable could not be found");
             return false;
         }
 
         try
         {
-            Process.Start(new ProcessStartInfo(install.ExecutablePath, "--edit-widgets") { UseShellExecute = true });
+            Process.Start(new ProcessStartInfo(install.ExecutablePath,
+                $"--edit-widgets --style {MacDesk.Desktop.Config.WidgetMonoMode}") { UseShellExecute = true });
             return true;
         }
         catch (Exception ex)
+        {
+            failure = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>通知运行中的 MacWidget 切换三态着色。旧版没有这些事件时返回失败；设置本身
+    /// 仍已保存，MacDesk 下次负责启动组件程序时会通过 --style 带过去。</summary>
+    public static bool ApplyMonoMode(string mode, out string? failure)
+    {
+        failure = null;
+        var install = Detect();
+        if (!install.IsRunning) return true;
+        string eventName = mode switch
+        {
+            "mono" => StyleMonoEventName,
+            "full" => StyleFullEventName,
+            _ => StyleAutoEventName,
+        };
+        try
+        {
+            using var evt = EventWaitHandle.OpenExisting(eventName);
+            return evt.Set();
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            failure = L.T(
+                "运行中的 MacWidget 版本尚不支持实时切换 Mono Mode；重新启动兼容版本后生效。",
+                "The running MacWidget version does not support live Mono Mode switching. Restart a compatible version to apply this setting.");
+            return false;
+        }
+        catch (UnauthorizedAccessException ex)
         {
             failure = ex.Message;
             return false;
