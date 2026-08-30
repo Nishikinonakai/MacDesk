@@ -31,7 +31,7 @@ namespace MacDesk;
 
 /// <summary>
 /// 设置窗口 v2：macOS 系统设置同款"左侧栏 + 右内容"布局（机主点名的设计）。
-/// 通用 / 外观（强调色）/ 菜单（黑名单）/ 关于（Claude 出品 + GitHub 检查更新）。
+/// 通用 / 外观（强调色）/ 菜单（黑名单）/ 关于（GitHub 检查更新）。
 /// 纯 WPF 代码构 UI，改动即存，共享 Desktop.Config。
 /// </summary>
 internal sealed class SettingsWindow : Window
@@ -585,6 +585,17 @@ internal sealed class SettingsWindow : Window
             new TextBlock { Text = state, FontSize = 12, Foreground = install.Detected ? TextFg : Subtle },
             L.T("检测正式 MacWidget 安装，也兼容当前的 WidgetProto 开发副本。打开本页或重新获得焦点时会刷新检测结果。",
                 "Detects the installed MacWidget app and the current WidgetProto development build. The status refreshes when this page regains focus.")));
+        integration.Children.Add(Separator());
+
+        var download = new Button
+        {
+            Content = L.T("下载 MacWidget", "Download MacWidget"),
+            Padding = new Thickness(14, 4, 14, 4),
+        };
+        download.Click += (_, _) => OpenUrl("https://github.com/Nishikinonakai/MacWidget");
+        integration.Children.Add(Row(L.T("获取 MacWidget", "Get MacWidget"), download,
+            L.T("MacWidget 是可选组件，只有在需要时才会由你选择下载并安装。",
+                "MacWidget is optional. Download and install it only if you choose to use it.")));
         integration.Children.Add(Separator());
 
         var avoidance = Toggle(Config.WidgetAvoidance, v =>
@@ -1201,14 +1212,6 @@ internal sealed class SettingsWindow : Window
             FontSize = 13,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 10, 0, 0),
-        });
-        about.Children.Add(new TextBlock
-        {
-            Text = "由 Claude 开发 · Built by Claude (Anthropic)",
-            FontSize = 14,
-            FontWeight = FontWeights.SemiBold,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            Margin = new Thickness(0, 14, 0, 0),
         });
         about.Children.Add(new TextBlock
         {
