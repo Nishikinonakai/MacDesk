@@ -48,6 +48,20 @@ internal sealed class SettingsWindow : Window
     }
 
     private static Settings Config => Desktop.Config;
+    private static readonly System.Windows.Media.FontFamily FluentIconFont = new("Segoe Fluent Icons");
+
+    private static string FluentIcon(int codePoint) => char.ConvertFromUtf32(codePoint);
+
+    private static TextBlock IconGlyph(int codePoint, double size = 16) => new()
+    {
+        Text = FluentIcon(codePoint),
+        FontFamily = FluentIconFont,
+        FontSize = size,
+        Width = 20,
+        TextAlignment = TextAlignment.Center,
+        VerticalAlignment = VerticalAlignment.Center,
+        Margin = new Thickness(0, 0, 8, 0),
+    };
 
     // mac 系统设置观感：颜色随系统深色/浅色 app 模式切换（机主系统是深色 app 模式，
     // 设置窗之前恒是浅色 mac 风——这批改成读注册表跟随，每次开窗现读一次即可，
@@ -133,17 +147,17 @@ internal sealed class SettingsWindow : Window
         // 导航按语义分类、页内按使用频率排；排障向开关全部沉到"高级"，别让普通用户翻到。
         foreach (var (icon, key, name) in new[]
         {
-            ("⚙️", "general", L.T("通用", "General")),
-            ("🖥️", "desktop", L.T("桌面", "Desktop")),
-            ("🧩", "widgets", L.T("小组件", "Widgets")),
-            ("🎨", "appearance", L.T("外观", "Appearance")),
-            ("📋", "menu", L.T("右键菜单", "Context Menu")),
-            ("🛠️", "advanced", L.T("高级", "Advanced")),
-            ("ℹ️", "about", L.T("关于", "About")),
+            (0xE713, "general", L.T("通用", "General")),
+            (0xE7F4, "desktop", L.T("桌面", "Desktop")),
+            (0xEA86, "widgets", L.T("小组件", "Widgets")),
+            (0xE790, "appearance", L.T("外观", "Appearance")),
+            (0xF0E3, "menu", L.T("右键菜单", "Context Menu")),
+            (0xE90F, "advanced", L.T("高级", "Advanced")),
+            (0xE946, "about", L.T("关于", "About")),
         })
         {
             var row = new StackPanel { Orientation = Orientation.Horizontal };
-            row.Children.Add(new TextBlock { Text = icon, FontSize = 14, Margin = new Thickness(0, 0, 8, 0) });
+            row.Children.Add(IconGlyph(icon));
             row.Children.Add(new TextBlock { Text = name, FontSize = 13, VerticalAlignment = VerticalAlignment.Center });
             _nav.Items.Add(new ListBoxItem { Content = row, Tag = key });
         }
@@ -403,6 +417,111 @@ internal sealed class SettingsWindow : Window
         var wrap = new StackPanel { Width = W };
         wrap.Children.Add(canvas);
         wrap.Children.Add(captions);
+        return wrap;
+    }
+
+    /// <summary>外观页通用数值滑杆：拖动预览，松手保存并刷新桌面视觉。</summary>
+    private UIElement PreferenceSlider(
+        double min, double max, double step,
+        Func<double> read, Action<double> write,
+        Func<double, string> format)
+    {
+        const double W = 220, D = 18, R = D / 2, RailH = 4, MidY = 12;
+        var accent = new SolidColorBrush(Accent.Current);
+        var canvas = new Canvas { Width = W, Height = 24 };
+        var rail = new Border
+        {
+            Width = W - 2, Height = RailH,
+            CornerRadius = new CornerRadius(RailH / 2),
+            Background = FieldBorder,
+        };
+        Canvas.SetLeft(rail, 1);
+        Canvas.SetTop(rail, MidY - RailH / 2);
+        canvas.Children.Add(rail);
+
+        var fill = new Border
+        {
+            Height = RailH,
+            CornerRadius = new CornerRadius(RailH / 2),
+            Background = accent,
+        };
+        Canvas.SetLeft(fill, 1);
+        Canvas.SetTop(fill, MidY - RailH / 2);
+        canvas.Children.Add(fill);
+
+        var thumb = new Border
+        {
+            Width = D, Height = D,
+            CornerRadius = new CornerRadius(R),
+            Background = Brushes.White,
+            BorderBrush = FieldBorder,
+            BorderThickness = new Thickness(0.5),
+            Effect = new System.Windows.Media.Effects.DropShadowEffect
+                { BlurRadius = 4, ShadowDepth = 0.5, Opacity = 0.35 },
+            Cursor = Cursors.Hand,
+        };
+        Canvas.SetTop(thumb, MidY - R);
+        canvas.Children.Add(thumb);
+
+        var valueText = new TextBlock
+        {
+            Width = 48,
+            FontSize = 11,
+            Foreground = Subtle,
+            TextAlignment = TextAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(8, 0, 0, 0),
+        };
+        var wrap = new StackPanel { Orientation = Orientation.Horizontal };
+        wrap.Children.Add(canvas);
+        wrap.Children.Add(valueText);
+
+        double Snap(double value)
+        {
+            double snapped = min + Math.Round((value - min) / step) * step;
+            return Math.Clamp(snapped, min, max);
+        }
+
+        double CenterX(double value) =>
+            R + (Snap(value) - min) / (max - min) * (W - D);
+
+        void Place(double value)
+        {
+            value = Snap(value);
+            double cx = CenterX(value);
+            Canvas.SetLeft(thumb, cx - R);
+            fill.Width = Math.Max(0, cx - 1);
+            valueText.Text = format(value);
+        }
+
+        double ValueFromX(double x)
+        {
+            double f = Math.Clamp((x - R) / (W - D), 0, 1);
+            return Snap(min + f * (max - min));
+        }
+
+        Place(read());
+        void Preview(double x) => Place(ValueFromX(x));
+
+        canvas.MouseLeftButtonDown += (_, e) =>
+        {
+            canvas.CaptureMouse();
+            Preview(e.GetPosition(canvas).X);
+            e.Handled = true;
+        };
+        canvas.MouseMove += (_, e) =>
+        {
+            if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed && canvas.IsMouseCaptured)
+                Preview(e.GetPosition(canvas).X);
+        };
+        canvas.MouseLeftButtonUp += (_, e) =>
+        {
+            if (!canvas.IsMouseCaptured) return;
+            canvas.ReleaseMouseCapture();
+            double value = ValueFromX(e.GetPosition(canvas).X);
+            Place(value);
+            write(value);
+        };
         return wrap;
     }
 
@@ -768,6 +887,15 @@ internal sealed class SettingsWindow : Window
             Desktop.LayoutAllWindows(animated: true);
         }), L.T("图标网格整体下移半行，给顶部菜单栏类软件让出空间，首行图标不再被吸顶窗口压住。\n自由摆放模式下手动摆好的图标不动，只影响自动排布；屏幕太矮放不下一行时自动忽略。",
             "Shifts the icon grid down half a row to make room for top menu-bar apps, keeping the first row clear of docked bars.\nIn free placement, manually placed icons stay put - only auto-flow is affected. Ignored when the screen is too short for a row.")));
+        layout.Children.Add(Separator());
+        layout.Children.Add(Row(L.T("拖拽悬停打开文件夹", "Spring-open Folders"),
+            Toggle(Config.SpringOpenFolders, v =>
+            {
+                Config.SpringOpenFolders = v;
+                Config.Save();
+            }),
+            L.T("拖动文件在文件夹上停留约 0.5 秒时自动打开；同一次拖动中同一文件夹只打开一次。",
+                "Automatically opens a folder after hovering for about 0.5 seconds; each folder opens at most once per drag.")));
         p.Children.Add(Card(layout));
 
         // 系统图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）。
@@ -985,7 +1113,72 @@ internal sealed class SettingsWindow : Window
             Desktop.RebuildVisuals();
         };
         sizeSec.Children.Add(Row(L.T("标签字重", "Label Weight"), weightBox));
+        sizeSec.Children.Add(Separator());
+        sizeSec.Children.Add(Row(L.T("文字字号", "Text Size"),
+            PreferenceSlider(8, 24, 1,
+                () => Config.LabelFontSize,
+                value =>
+                {
+                    Config.LabelFontSize = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                },
+                value => $"{value:0}"),
+            L.T("固定标签字号，不随图标大小缩放；默认值为 12。",
+                "Fixed label size; it does not scale with the icon size. Default: 12.")));
         p.Children.Add(Card(sizeSec));
+
+        p.Children.Add(Section(L.T("文字阴影", "Text Shadow")));
+        var shadowSec = new StackPanel();
+        shadowSec.Children.Add(Row(L.T("阴影大小", "Shadow Size"),
+            PreferenceSlider(0, 8, 1,
+                () => Config.LabelShadowSize,
+                value =>
+                {
+                    Config.LabelShadowSize = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                },
+                value => $"{value:0}"),
+            L.T("控制阴影轮廓的扩展量。", "Controls the shadow outline expansion.")));
+        shadowSec.Children.Add(Separator());
+        shadowSec.Children.Add(Row(L.T("透明度", "Opacity"),
+            PreferenceSlider(0, 1, 0.05,
+                () => Config.LabelShadowOpacity,
+                value =>
+                {
+                    Config.LabelShadowOpacity = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                },
+                value => $"{value * 100:0}%"),
+            L.T("阴影的不透明度。", "Shadow opacity.")));
+        shadowSec.Children.Add(Separator());
+        shadowSec.Children.Add(Row(L.T("距离", "Distance"),
+            PreferenceSlider(0, 12, 1,
+                () => Config.LabelShadowDistance,
+                value =>
+                {
+                    Config.LabelShadowDistance = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                },
+                value => $"{value:0}"),
+            L.T("阴影偏移距离，方向固定为左上到右下 45°。",
+                "Shadow offset; direction is fixed at 45° from upper-left to lower-right.")));
+        shadowSec.Children.Add(Separator());
+        shadowSec.Children.Add(Row(L.T("模糊度", "Blur"),
+            PreferenceSlider(0, 12, 1,
+                () => Config.LabelShadowBlur,
+                value =>
+                {
+                    Config.LabelShadowBlur = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                },
+                value => $"{value:0}"),
+            L.T("控制阴影边缘的柔和程度。", "Controls edge softness.")));
+        p.Children.Add(Card(shadowSec));
 
         p.Children.Add(Section(L.T("颜色", "Color")));
         var sec = new StackPanel();
@@ -1010,7 +1203,8 @@ internal sealed class SettingsWindow : Window
                 if (active)
                     dot.Child = new TextBlock
                     {
-                        Text = "✓", Foreground = Brushes.White, FontWeight = FontWeights.Bold,
+                        Text = FluentIcon(0xE73E), FontFamily = FluentIconFont,
+                        Foreground = Brushes.White, FontWeight = FontWeights.Bold,
                         FontSize = 12, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
                     };
                 string k = key;

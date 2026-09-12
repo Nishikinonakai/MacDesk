@@ -72,6 +72,9 @@ internal sealed class Settings
     /// 没装任何预览器时空格什么都不做（不影响首字母定位，见 FilePreview）。</summary>
     public bool SpacePreview { get; set; } = true;
 
+    /// <summary>拖拽文件悬停在文件夹上时自动打开。一次拖拽会话内同一文件夹最多打开一次。</summary>
+    public bool SpringOpenFolders { get; set; } = true;
+
     /// <summary>空白处右键出 Windows 原生桌面菜单（转发 WM_CONTEXTMENU 给 DefView，Explorer
     /// 弹它自己的现代/经典菜单）；此时按住 Alt 再右键才出 MacDesk 自制菜单。默认关。</summary>
     public bool NativeBackgroundMenu { get; set; }
@@ -100,6 +103,22 @@ internal sealed class Settings
 
     /// <summary>桌面图标标签字重：regular | semibold | bold。默认保留旧版 bold 观感。</summary>
     public string IconFontWeight { get; set; } = "bold";
+
+    /// <summary>桌面图标标签字号（DIU）。不随图标尺寸缩放，默认 12。</summary>
+    public double LabelFontSize { get; set; } = 12;
+
+    /// <summary>标签阴影轮廓扩展量。WPF DropShadowEffect 没有独立 spread 属性，
+    /// 由此值参与阴影半径计算，默认 0。</summary>
+    public double LabelShadowSize { get; set; }
+
+    /// <summary>标签阴影透明度，范围 0..1，默认 0.85。</summary>
+    public double LabelShadowOpacity { get; set; } = 0.85;
+
+    /// <summary>标签阴影距离，范围 0..12，默认 1。</summary>
+    public double LabelShadowDistance { get; set; } = 1;
+
+    /// <summary>标签阴影模糊度，范围 0..12，默认 3。</summary>
+    public double LabelShadowBlur { get; set; } = 3;
 
     /// <summary>首行下沉：显示网格整体下移默认档半行（56 DIU），给第三方顶部菜单栏类软件
     /// 让出空间，吸顶窗口不再压住首行图标。纯显示层偏移（见 MainWindow.SinkY），不写 Canon，
@@ -179,6 +198,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("Language", out var lg) && lg.ValueKind == JsonValueKind.String)
                     s.Language = lg.GetString()!;
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
+                if (doc.RootElement.TryGetProperty("SpringOpenFolders", out var sof)) s.SpringOpenFolders = sof.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("WidgetAvoidance", out var wa)) s.WidgetAvoidance = wa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("WidgetMonoMode", out var wm) && wm.ValueKind == JsonValueKind.String)
@@ -195,6 +215,16 @@ internal sealed class Settings
                     s.IconFontFamily = iff.GetString()!;
                 if (doc.RootElement.TryGetProperty("IconFontWeight", out var ifw) && ifw.ValueKind == JsonValueKind.String)
                     s.IconFontWeight = ifw.GetString()!;
+                if (doc.RootElement.TryGetProperty("LabelFontSize", out var lfs) && lfs.ValueKind == JsonValueKind.Number)
+                    s.LabelFontSize = lfs.GetDouble();
+                if (doc.RootElement.TryGetProperty("LabelShadowSize", out var lss) && lss.ValueKind == JsonValueKind.Number)
+                    s.LabelShadowSize = lss.GetDouble();
+                if (doc.RootElement.TryGetProperty("LabelShadowOpacity", out var lso) && lso.ValueKind == JsonValueKind.Number)
+                    s.LabelShadowOpacity = lso.GetDouble();
+                if (doc.RootElement.TryGetProperty("LabelShadowDistance", out var lsd) && lsd.ValueKind == JsonValueKind.Number)
+                    s.LabelShadowDistance = lsd.GetDouble();
+                if (doc.RootElement.TryGetProperty("LabelShadowBlur", out var lsb) && lsb.ValueKind == JsonValueKind.Number)
+                    s.LabelShadowBlur = lsb.GetDouble();
                 if (doc.RootElement.TryGetProperty("FirstRowSink", out var rs)) s.FirstRowSink = rs.GetBoolean();
                 if (doc.RootElement.TryGetProperty("RenderMode", out var rm) && rm.ValueKind == JsonValueKind.String)
                     s.RenderMode = rm.GetString()!;
@@ -214,6 +244,11 @@ internal sealed class Settings
         if (string.IsNullOrWhiteSpace(s.IconFontFamily) ||
             string.Equals(s.IconFontFamily, "Segoe UI, Microsoft YaHei UI", StringComparison.OrdinalIgnoreCase))
             s.IconFontFamily = "Segoe UI";
+        s.LabelFontSize = Math.Clamp(s.LabelFontSize, 8, 24);
+        s.LabelShadowSize = Math.Clamp(s.LabelShadowSize, 0, 8);
+        s.LabelShadowOpacity = Math.Clamp(s.LabelShadowOpacity, 0, 1);
+        s.LabelShadowDistance = Math.Clamp(s.LabelShadowDistance, 0, 12);
+        s.LabelShadowBlur = Math.Clamp(s.LabelShadowBlur, 0, 12);
         return s;
     }
 
@@ -222,7 +257,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, SpringOpenFolders, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconFontFamily, IconFontWeight, LabelFontSize, LabelShadowSize, LabelShadowOpacity, LabelShadowDistance, LabelShadowBlur, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

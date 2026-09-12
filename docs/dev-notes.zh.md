@@ -17,7 +17,7 @@
 ## 构建（在 macOS 上交叉编译）
 
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained true -o publish
+dotnet publish -c Release -r win-x64 --self-contained false -o publish
 # EnableWindowsTargeting=true 已配置，Mac/Linux 可直接出 win-x64 包
 ```
 

@@ -37,14 +37,16 @@ namespace MacDesk;
 public partial class MainWindow : Window
 {
     // mac 式网格（DIU）：base（S=1）= 112×112 方形格（对齐 Finder gridSpacing 实测值）。
-    // 图标尺寸档只换缩放因子 S = IconSize/64（base 图标 64 DIU）；格/间距/字号/图源全随 S 现算，
+    // 图标尺寸档只换缩放因子 S = IconSize/64（base 图标 64 DIU）；格/间距/图源随 S 现算，
     // 重排现场推导显示位置、**绝不回写 Canon**（分辨率无关红线，切档同切分辨率一个道理）。
     // 改档走 Desktop.SetIconSize → RebuildForScale（经现有工厂重建，见那里）。
     private double S => Math.Clamp(Config.IconSize, 32, 160) / 64.0;
-    private double CellW => 96 * S;
-    private double CellH => 104 * S;
-    private double GapX => 16 * S;
-    private double GapY => 8 * S;
+    private double LabelFontSize => Math.Clamp(Config.LabelFontSize, 8, 24);
+    private double LabelMaxHeight => LabelFontSize * 34 / 12;
+    private double CellW => Math.Max(96 * S, 78);
+    private double CellH => 70 * S + LabelMaxHeight;
+    private double GapX => Math.Max(16 * S, 12);
+    private double GapY => Math.Max(8 * S, 8);
 
     private static FontFamily LabelFontFamily => new(string.IsNullOrWhiteSpace(Config.IconFontFamily)
         ? "Segoe UI" : Config.IconFontFamily);
@@ -53,6 +55,15 @@ public partial class MainWindow : Window
         "regular" => FontWeights.Regular,
         "semibold" => FontWeights.SemiBold,
         _ => FontWeights.Bold,
+    };
+
+    private static DropShadowEffect CreateLabelShadow() => new()
+    {
+        Color = Colors.Black,
+        Direction = 315, // 阴影向右下，固定 45 度
+        ShadowDepth = Math.Clamp(Config.LabelShadowDistance, 0, 12),
+        BlurRadius = Math.Clamp(Config.LabelShadowBlur + Config.LabelShadowSize, 0, 20),
+        Opacity = Math.Clamp(Config.LabelShadowOpacity, 0, 1),
     };
     // 裸边（该侧无任务栏）美学边距；Top/Right 同时是 Canon 锚距的坐标基准（CellToCanon/CanonToCell）。
     // 任务栏避让不再靠常量（旧 MarginBottom=60 按"48 栏+余量"拍死，真栏矮时白扣一截），
@@ -641,15 +652,15 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelFontSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxHeight = 34 * S,
+            MaxHeight = LabelMaxHeight,
             Opacity = 0.9,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = CreateLabelShadow(),
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
@@ -744,14 +755,14 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelFontSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
-            MaxHeight = 34 * S,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            MaxHeight = LabelMaxHeight,
+            Effect = CreateLabelShadow(),
         };
         // 小字号必须走 Display 模式（对齐像素网格），配合 MoveIcon 的整数坐标吸附——
         // 亚像素落位是"有的标签清晰有的糊"的元凶
@@ -800,13 +811,13 @@ public partial class MainWindow : Window
         var ft = new FormattedText(text,
             System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
             new Typeface(LabelFontFamily, FontStyles.Normal, LabelFontWeight, FontStretches.Normal),
-            12 * S, Brushes.White, null, TextFormattingMode.Display,
+            LabelFontSize, Brushes.White, null, TextFormattingMode.Display,
             VisualTreeHelper.GetDpi(this).PixelsPerDip)
         {
             MaxTextWidth = CellW - 14 * S, // labelPlate MaxWidth(CellW-4·S) − 左右 Padding(5·S+5·S)
             Trimming = TextTrimming.None,
         };
-        return ft.Height <= 34.5 * S; // TextBlock MaxHeight=34·S（两行）
+        return ft.Height <= LabelMaxHeight + 0.5; // 与 TextBlock 的两行高度上限一致
     }
 
     /// <summary>Finder 行为：溢出两行时中间省略，尾部保"扩展名+3 字符"（尾部区分度高，
@@ -1503,11 +1514,11 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelFontSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = CreateLabelShadow(),
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
@@ -2117,11 +2128,11 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelFontSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = CreateLabelShadow(),
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
@@ -3118,7 +3129,7 @@ public partial class MainWindow : Window
         _renameBox = new TextBox
         {
             Text = editText,
-            FontSize = 12 * S,
+            FontSize = LabelFontSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             MinWidth = 60 * S,
@@ -3261,30 +3272,75 @@ public partial class MainWindow : Window
         try { return data.GetDataPresent(ShellDrag.InternalFormat); } catch { return false; }
     }
 
+    /// <summary>
+    /// 读取外部程序提供的文件路径。Explorer 通常给 CF_HDROP（FileDrop），
+    /// 一些聊天/传输软件则给 Shell 兼容的 FileNameW/FileName 格式。
+    /// </summary>
+    private static string[]? GetDraggedPaths(System.Windows.IDataObject data)
+    {
+        foreach (var format in new[] { DataFormats.FileDrop, "FileNameW", "FileName" })
+        {
+            try
+            {
+                if (!data.GetDataPresent(format, true)) continue;
+                var value = data.GetData(format, true);
+                var paths = value switch
+                {
+                    string[] a => a,
+                    StringCollection c => c.Cast<string>().ToArray(),
+                    IEnumerable<string> e => e.ToArray(),
+                    string s => s.Split('\0', StringSplitOptions.RemoveEmptyEntries),
+                    _ => Array.Empty<string>(),
+                };
+                paths = paths.Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => p.Trim())
+                    .Where(p => Path.IsPathFullyQualified(p))
+                    .ToArray();
+                if (paths.Length > 0) return paths;
+            }
+            catch { }
+        }
+        return null;
+    }
+
     private void ComputeDragEffects(DragEventArgs e)
     {
         e.Handled = true;
         if (IsInternalDrag(e.Data)) { e.Effects = DragDropEffects.Move; return; } // 自家图标：重定位
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effects = DragDropEffects.None; return; }
-        var paths = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+        var paths = GetDraggedPaths(e.Data);
+        if (paths is not { Length: > 0 }) { e.Effects = DragDropEffects.None; return; }
+        var desired = DragDropEffects.Copy;
         if (paths.All(IsOnDesktop))
-            e.Effects = DragDropEffects.Move; // 资源管理器里的桌面文件夹拖来的也算重定位
+            desired = DragDropEffects.Move; // 资源管理器里的桌面文件夹拖来的也算重定位
         else
         {
             bool sameVolume = string.Equals(Path.GetPathRoot(paths[0]),
                 Path.GetPathRoot(DesktopItemProvider.UserDesktop), StringComparison.OrdinalIgnoreCase);
-            e.Effects = (sameVolume && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+            desired = sameVolume && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
                 ? DragDropEffects.Move : DragDropEffects.Copy; // Explorer 习惯：同卷移动、跨卷复制、Ctrl 强制复制
         }
+        // 拖拽源可以限制操作类型（QQ 等应用通常只允许 Copy）。
+        // 未经协商直接返回 Move 会被源判定为非法落点，光标就会显示禁止符号。
+        e.Effects = desired & e.AllowedEffects;
+        if (e.Effects == DragDropEffects.None)
+            e.Effects = e.AllowedEffects & (DragDropEffects.Copy | DragDropEffects.Move | DragDropEffects.Link);
     }
 
     // IDropTargetHelper 全程配合（Enter/Over/Leave/Drop），shell 拖拽图像才会在我们窗口上显示
     private void OnDesktopDragEnter(object sender, DragEventArgs e)
     {
+        // 以拖拽数据对象区分会话。离开窗口后再次进入仍可能是同一次拖拽，
+        // 因此不能在每次 DragEnter 时无条件清空已打开文件夹。
+        if (!ReferenceEquals(_springDragData, e.Data))
+        {
+            _springDragData = e.Data;
+            _springOpenedFolders.Clear();
+        }
         ComputeDragEffects(e);
         // 缓存本次拖拽的路径集（悬停命中要排除拖拽项自身，每帧解析数据对象太贵）
         _dragOverPaths = InternalDragPaths(e.Data)
-            ?? (e.Data.GetDataPresent(DataFormats.FileDrop) ? (string[])e.Data.GetData(DataFormats.FileDrop)! : Array.Empty<string>());
+            ?? GetDraggedPaths(e.Data)
+            ?? Array.Empty<string>();
         _dropHelper ??= ShellDrag.CreateDropTargetHelper();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
@@ -3317,6 +3373,8 @@ public partial class MainWindow : Window
     private IconVisual? _springTarget;
     private DateTime _springStart;
     private bool _sprung;
+    private object? _springDragData;
+    private readonly HashSet<string> _springOpenedFolders = new(StringComparer.OrdinalIgnoreCase);
 
     private void UpdateSpringTarget(Point pos)
     {
@@ -3329,11 +3387,13 @@ public partial class MainWindow : Window
             _sprung = false;
             HighlightDropTarget(target, true); // 回收站也高亮（它是合法落点），弹簧只对真文件夹
         }
-        else if (target != null && !_sprung
+        else if (Config.SpringOpenFolders && target != null && !_sprung
                  && (DateTime.UtcNow - _springStart).TotalMilliseconds >= 500
-                 && Directory.Exists(target.Entry.Path))
+                 && Directory.Exists(target.Entry.Path)
+                 && !_springOpenedFolders.Contains(target.Entry.Path))
         {
-            _sprung = true; // 同一目标只弹一次，移开重悬停才再弹
+            _sprung = true; // 当前悬停目标只触发一次
+            _springOpenedFolders.Add(target.Entry.Path); // 一次拖拽会话内同一文件夹只触发一次
             if (IsStackFolderIcon(target))
             {
                 // 堆叠文件夹的弹簧 = 原地展开（Dock 语义），不再另开资源管理器；
@@ -3383,6 +3443,8 @@ public partial class MainWindow : Window
     {
         e.Handled = true;
         ClearSpring();
+        _springDragData = null;
+        _springOpenedFolders.Clear();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
             Native.GetCursorPos(out var pt);
@@ -3422,8 +3484,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-        var paths = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+        var paths = GetDraggedPaths(e.Data);
+        if (paths is not { Length: > 0 }) return;
         if (DropTargetIconAt(dropPos, paths) is { } t2)
         {
             // 外来/桌面文件落在文件夹图标上 = 移入；落在回收站图标上 = 删除（Finder/Explorer 语义）
