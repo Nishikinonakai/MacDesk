@@ -72,6 +72,9 @@ internal sealed class Settings
     /// 没装任何预览器时空格什么都不做（不影响首字母定位，见 FilePreview）。</summary>
     public bool SpacePreview { get; set; } = true;
 
+    /// <summary>拖动文件悬停在文件夹上时自动打开。</summary>
+    public bool SpringOpenFolders { get; set; } = true;
+
     /// <summary>空白处右键出 Windows 原生桌面菜单（转发 WM_CONTEXTMENU 给 DefView，Explorer
     /// 弹它自己的现代/经典菜单）；此时按住 Alt 再右键才出 MacDesk 自制菜单。默认关。</summary>
     public bool NativeBackgroundMenu { get; set; }
@@ -182,6 +185,7 @@ internal sealed class Settings
                 if (doc.RootElement.TryGetProperty("Language", out var lg) && lg.ValueKind == JsonValueKind.String)
                     s.Language = lg.GetString()!;
                 if (doc.RootElement.TryGetProperty("SpacePreview", out var sp)) s.SpacePreview = sp.GetBoolean();
+                if (doc.RootElement.TryGetProperty("SpringOpenFolders", out var sof)) s.SpringOpenFolders = sof.GetBoolean();
                 if (doc.RootElement.TryGetProperty("NativeBackgroundMenu", out var nb)) s.NativeBackgroundMenu = nb.GetBoolean();
                 if (doc.RootElement.TryGetProperty("WidgetAvoidance", out var wa)) s.WidgetAvoidance = wa.GetBoolean();
                 if (doc.RootElement.TryGetProperty("WidgetMonoMode", out var wm) && wm.ValueKind == JsonValueKind.String)
@@ -227,7 +231,7 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconLabelSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, SpringOpenFolders, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconLabelSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }

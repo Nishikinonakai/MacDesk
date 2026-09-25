@@ -3285,21 +3285,69 @@ public partial class MainWindow : Window
         try { return data.GetDataPresent(ShellDrag.InternalFormat); } catch { return false; }
     }
 
+    /// <summary>外部程序可能只提供单文件 FileNameW/FileName，而非 CF_HDROP。</summary>
+    private static (string[] Paths, bool IsFileDrop)? ExternalDragPaths(System.Windows.IDataObject data)
+    {
+        foreach (var format in new[] { DataFormats.FileDrop, "FileNameW", "FileName" })
+        {
+            try
+            {
+                if (!data.GetDataPresent(format, false)) continue;
+                var value = data.GetData(format, false);
+                string[] paths = value switch
+                {
+                    string[] a => a,
+                    System.Collections.Specialized.StringCollection c => c.Cast<string>().ToArray(),
+                    string s => s.Split('\0', StringSplitOptions.RemoveEmptyEntries),
+                    MemoryStream ms when format == "FileNameW" && ms.Length <= 65536 =>
+                        System.Text.Encoding.Unicode.GetString(ms.ToArray())
+                            .Split('\0', StringSplitOptions.RemoveEmptyEntries),
+                    _ => Array.Empty<string>(),
+                };
+                paths = paths.Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => p.TrimEnd('\0'))
+                    .Where(Path.IsPathFullyQualified)
+                    .ToArray();
+                if (paths.Length > 0) return (paths, format == DataFormats.FileDrop);
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static DragDropEffects ExternalDragEffect(
+        (string[] Paths, bool IsFileDrop) files, DragDropEffects allowed,
+        DragDropKeyStates keys, bool overRecycleBin)
+    {
+        if (files.Paths.Any(DesktopItemProvider.IsDriveRoot)) return DragDropEffects.None;
+        // 回收站语义只能是移动。源程序只允许复制时不能亮出可放置光标。
+        if (overRecycleBin)
+            return allowed.HasFlag(DragDropEffects.Move) ? DragDropEffects.Move : DragDropEffects.None;
+        bool sameVolume = files.Paths.All(p => string.Equals(Path.GetPathRoot(p),
+            Path.GetPathRoot(DesktopItemProvider.UserDesktop), StringComparison.OrdinalIgnoreCase));
+        bool preferMove = files.IsFileDrop && !keys.HasFlag(DragDropKeyStates.ControlKey)
+            && (files.Paths.All(IsOnDesktop) || sameVolume);
+        var preferred = preferMove ? DragDropEffects.Move : DragDropEffects.Copy;
+        if (allowed.HasFlag(preferred)) return preferred;
+        if (allowed.HasFlag(DragDropEffects.Copy)) return DragDropEffects.Copy;
+        if (allowed.HasFlag(DragDropEffects.Move)) return DragDropEffects.Move;
+        return DragDropEffects.None; // Link 尚未实现，不对源程序承诺会创建快捷方式
+    }
+
     private void ComputeDragEffects(DragEventArgs e)
     {
         e.Handled = true;
-        if (IsInternalDrag(e.Data)) { e.Effects = DragDropEffects.Move; return; } // 自家图标：重定位
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) { e.Effects = DragDropEffects.None; return; }
-        var paths = (string[])e.Data.GetData(DataFormats.FileDrop)!;
-        if (paths.All(IsOnDesktop))
-            e.Effects = DragDropEffects.Move; // 资源管理器里的桌面文件夹拖来的也算重定位
-        else
+        if (IsInternalDrag(e.Data))
         {
-            bool sameVolume = string.Equals(Path.GetPathRoot(paths[0]),
-                Path.GetPathRoot(DesktopItemProvider.UserDesktop), StringComparison.OrdinalIgnoreCase);
-            e.Effects = (sameVolume && !Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
-                ? DragDropEffects.Move : DragDropEffects.Copy; // Explorer 习惯：同卷移动、跨卷复制、Ctrl 强制复制
+            e.Effects = e.AllowedEffects.HasFlag(DragDropEffects.Move)
+                ? DragDropEffects.Move : DragDropEffects.None;
+            return;
         }
+        var files = ExternalDragPaths(e.Data);
+        if (files is not { } external) { e.Effects = DragDropEffects.None; return; }
+        bool recycle = DropTargetIconAt(e.GetPosition(IconCanvas), external.Paths)?.Entry.Path
+            == DesktopItemProvider.RecycleBin;
+        e.Effects = ExternalDragEffect(external, e.AllowedEffects, e.KeyStates, recycle);
     }
 
     // IDropTargetHelper 全程配合（Enter/Over/Leave/Drop），shell 拖拽图像才会在我们窗口上显示
@@ -3308,7 +3356,8 @@ public partial class MainWindow : Window
         ComputeDragEffects(e);
         // 缓存本次拖拽的路径集（悬停命中要排除拖拽项自身，每帧解析数据对象太贵）
         _dragOverPaths = InternalDragPaths(e.Data)
-            ?? (e.Data.GetDataPresent(DataFormats.FileDrop) ? (string[])e.Data.GetData(DataFormats.FileDrop)! : Array.Empty<string>());
+            ?? ExternalDragPaths(e.Data)?.Paths
+            ?? Array.Empty<string>();
         _dropHelper ??= ShellDrag.CreateDropTargetHelper();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
@@ -3325,7 +3374,14 @@ public partial class MainWindow : Window
             Native.GetCursorPos(out var pt);
             try { _dropHelper.DragOver(ref pt, (uint)e.Effects); } catch { }
         }
-        UpdateSpringTarget(e.GetPosition(IconCanvas));
+        if (e.Effects != DragDropEffects.None)
+        {
+            if (_dragOverPaths.Length == 0)
+                _dragOverPaths = InternalDragPaths(e.Data) ?? ExternalDragPaths(e.Data)?.Paths
+                    ?? Array.Empty<string>();
+            UpdateSpringTarget(e.GetPosition(IconCanvas));
+        }
+        else ClearSpring(clearPaths: false);
     }
 
     private void OnDesktopDragLeave(object sender, DragEventArgs e)
@@ -3353,7 +3409,7 @@ public partial class MainWindow : Window
             _sprung = false;
             HighlightDropTarget(target, true); // 回收站也高亮（它是合法落点），弹簧只对真文件夹
         }
-        else if (target != null && !_sprung
+        else if (Config.SpringOpenFolders && target != null && !_sprung
                  && (DateTime.UtcNow - _springStart).TotalMilliseconds >= 500
                  && Directory.Exists(target.Entry.Path))
         {
@@ -3395,23 +3451,25 @@ public partial class MainWindow : Window
         PokeFrames(150);
     }
 
-    private void ClearSpring()
+    private void ClearSpring(bool clearPaths = true)
     {
         HighlightDropTarget(_springTarget, false);
         _springTarget = null;
         _sprung = false;
-        _dragOverPaths = Array.Empty<string>();
+        if (clearPaths) _dragOverPaths = Array.Empty<string>();
     }
 
     private void OnDesktopDrop(object sender, DragEventArgs e)
     {
-        e.Handled = true;
+        // Drop 事件的 Effects 初始值是源的 AllowedEffects，不能沿用 DragOver 的选择。
+        ComputeDragEffects(e);
         ClearSpring();
         if (_dropHelper != null && ShellDrag.ComDataObject(e.Data) is { } com)
         {
             Native.GetCursorPos(out var pt);
             try { _dropHelper.Drop(com, ref pt, (uint)e.Effects); } catch { }
         }
+        if (e.Effects == DragDropEffects.None) return;
         var dropPos = e.GetPosition(IconCanvas);
 
         // 自家拖拽（含回收站等虚拟项）：落在文件夹/回收站图标上走移入/删除，否则重定位
@@ -3447,21 +3505,26 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
-        var paths = (string[])e.Data.GetData(DataFormats.FileDrop)!;
-        if (paths.Any(DesktopItemProvider.IsDriveRoot)) return;
+        var files = ExternalDragPaths(e.Data);
+        if (files is not { } external) { e.Effects = DragDropEffects.None; return; }
+        var paths = external.Paths;
         if (DropTargetIconAt(dropPos, paths) is { } t2)
         {
-            // 外来/桌面文件落在文件夹图标上 = 移入；落在回收站图标上 = 删除（Finder/Explorer 语义）
-            if (t2.Entry.Path == DesktopItemProvider.RecycleBin) DeleteViaShell(paths);
-            else MoveIntoFolder(paths, t2.Entry.Path);
+            // 外部源仅允许 Copy 时，落到文件夹也必须复制，不能擅自移动源文件。
+            bool ok = t2.Entry.Path == DesktopItemProvider.RecycleBin
+                ? DeleteViaShell(paths)
+                : MoveIntoFolder(paths, t2.Entry.Path, copy: e.Effects == DragDropEffects.Copy);
+            if (!ok) e.Effects = DragDropEffects.None;
             return;
         }
-        if (paths.All(IsOnDesktop)) { RepositionAt(paths, dropPos); return; }
+        if (e.Effects == DragDropEffects.Move && paths.All(IsOnDesktop))
+        {
+            RepositionAt(paths, dropPos);
+            return;
+        }
 
         // 外来文件：SHFileOperation 移动/复制到用户桌面（系统级冲突对话框）
-        bool copy = e.Effects.HasFlag(DragDropEffects.Copy) && !e.Effects.HasFlag(DragDropEffects.Move)
-                 || Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
+        bool copy = e.Effects == DragDropEffects.Copy;
         var op = new Native.SHFILEOPSTRUCT
         {
             hwnd = _hwnd,
@@ -3472,7 +3535,8 @@ public partial class MainWindow : Window
         };
         // 预登记落点：watcher 建图标时按拖放位置落座
         PreassignDropPositions(paths.Select(Path.GetFileName).ToList()!, dropPos);
-        Native.SHFileOperationW(ref op);
+        if (Native.SHFileOperationW(ref op) != 0 || op.fAnyOperationsAborted)
+            e.Effects = DragDropEffects.None;
     }
 
     /// <summary>落点处的可接收图标：文件夹或回收站（拖拽的项自身除外）。</summary>
@@ -3491,21 +3555,22 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void MoveIntoFolder(string[] paths, string folder)
+    private bool MoveIntoFolder(string[] paths, string folder, bool copy = false)
     {
         var op = new Native.SHFILEOPSTRUCT
         {
             hwnd = _hwnd,
-            wFunc = Native.FO_MOVE,
+            wFunc = copy ? Native.FO_COPY : Native.FO_MOVE,
             pFrom = string.Join("\0", paths) + "\0\0",
             pTo = folder + "\0\0",
             fFlags = Native.FOF_ALLOWUNDO,
         };
-        Native.SHFileOperationW(ref op);
-        // 图标移除交给 FileSystemWatcher
+        bool ok = Native.SHFileOperationW(ref op) == 0 && !op.fAnyOperationsAborted;
+        // 图标增删交给 FileSystemWatcher。
+        return ok;
     }
 
-    private void DeleteViaShell(string[] paths)
+    private bool DeleteViaShell(string[] paths)
     {
         var op = new Native.SHFILEOPSTRUCT
         {
@@ -3514,7 +3579,7 @@ public partial class MainWindow : Window
             pFrom = string.Join("\0", paths) + "\0\0",
             fFlags = Native.FOF_ALLOWUNDO, // 进回收站
         };
-        Native.SHFileOperationW(ref op);
+        return Native.SHFileOperationW(ref op) == 0 && !op.fAnyOperationsAborted;
     }
 
     /// <summary>

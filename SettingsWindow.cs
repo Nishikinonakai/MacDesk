@@ -768,6 +768,15 @@ internal sealed class SettingsWindow : Window
             Desktop.LayoutAllWindows(animated: true);
         }), L.T("图标网格整体下移半行，给顶部菜单栏类软件让出空间，首行图标不再被吸顶窗口压住。\n自由摆放模式下手动摆好的图标不动，只影响自动排布；屏幕太矮放不下一行时自动忽略。",
             "Shifts the icon grid down half a row to make room for top menu-bar apps, keeping the first row clear of docked bars.\nIn free placement, manually placed icons stay put - only auto-flow is affected. Ignored when the screen is too short for a row.")));
+        layout.Children.Add(Separator());
+        layout.Children.Add(Row(L.T("拖拽悬停打开文件夹", "Spring-open Folders"),
+            Toggle(Config.SpringOpenFolders, on =>
+            {
+                Config.SpringOpenFolders = on;
+                Config.Save();
+            }),
+            L.T("拖动文件在文件夹上停留约 0.5 秒时自动打开。",
+                "Opens a folder after a dragged file hovers over it for about 0.5 seconds.")));
         p.Children.Add(Card(layout));
 
         // 系统图标（Windows"桌面图标设置"那一组虚拟项；首启默认跟随原生桌面，之后以此为准）。
