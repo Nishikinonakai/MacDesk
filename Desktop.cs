@@ -22,6 +22,7 @@ internal static class Desktop
     public static string PrimaryKey => Monitors[0].Key;
 
     private static DispatcherTimer? _fsDebounce;
+    private static bool _iconsDirty;
     private static DispatcherTimer? _driveDebounce;
     private static string _driveSignature = "";
     private static readonly HashSet<string> _attachedKeys = new();
@@ -81,9 +82,20 @@ internal static class Desktop
             catch (Exception ex) { Log.Write("OOBE import failed: " + ex.Message); }
         }
         _fsDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _fsDebounce.Tick += (_, _) => { _fsDebounce.Stop(); RefreshAll(); };
+        _fsDebounce.Tick += (_, _) =>
+        {
+            _fsDebounce.Stop();
+            if (_iconsDirty) { _iconsDirty = false; RefreshIcons(); }
+            else RefreshAll();
+        };
         Provider.Changed += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
         {
+            _fsDebounce.Stop();
+            _fsDebounce.Start();
+        });
+        Provider.IconsChanged += () => System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            _iconsDirty = true;
             _fsDebounce.Stop();
             _fsDebounce.Start();
         });
@@ -290,6 +302,13 @@ internal static class Desktop
         foreach (var w in Windows) if (w.Attached) w.TearDownVisuals();
         RefreshAll();
         LayoutAllWindows(animated: false);
+    }
+
+    /// <summary>手动刷新或文件图标设置变化：丢弃类型图标缓存并重新从 Shell 取图。</summary>
+    public static void RefreshIcons()
+    {
+        IconLoader.ClearShared();
+        RebuildVisuals();
     }
 
 }

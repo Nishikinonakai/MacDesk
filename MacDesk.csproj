@@ -17,6 +17,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="publish\**\*.cs" />
     <Resource Include="Assets\macdesk.ico" />
     <Resource Include="Assets\macdesk_1024.png" />
   </ItemGroup>

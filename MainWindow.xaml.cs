@@ -37,14 +37,17 @@ namespace MacDesk;
 public partial class MainWindow : Window
 {
     // mac 式网格（DIU）：base（S=1）= 112×112 方形格（对齐 Finder gridSpacing 实测值）。
-    // 图标尺寸档只换缩放因子 S = IconSize/64（base 图标 64 DIU）；格/间距/字号/图源全随 S 现算，
+    // 图标尺寸档只换缩放因子 S = IconSize/64（base 图标 64 DIU）；格/间距/图源随 S 现算，
+    // 标签字号独立设置，网格保留足够宽高避免小图标时文字挤压。
     // 重排现场推导显示位置、**绝不回写 Canon**（分辨率无关红线，切档同切分辨率一个道理）。
     // 改档走 Desktop.SetIconSize → RebuildForScale（经现有工厂重建，见那里）。
     private double S => Math.Clamp(Config.IconSize, 32, 160) / 64.0;
-    private double CellW => 96 * S;
-    private double CellH => 104 * S;
-    private double GapX => 16 * S;
-    private double GapY => 8 * S;
+    private double LabelSize => Math.Clamp(Config.IconLabelSize, 9, 24);
+    private double LabelHeight => LabelSize * 2.8;
+    private double CellW => Math.Max(96 * S, LabelSize * 6.5);
+    private double CellH => Math.Max(104 * S, 76 * S + LabelHeight + 4);
+    private double GapX => Math.Max(16 * S, 8);
+    private double GapY => Math.Max(8 * S, 8);
 
     private static FontFamily LabelFontFamily => new(string.IsNullOrWhiteSpace(Config.IconFontFamily)
         ? "Segoe UI" : Config.IconFontFamily);
@@ -656,13 +659,13 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis,
-            MaxHeight = 34 * S,
+            MaxHeight = LabelHeight,
             Opacity = 0.9,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
@@ -759,13 +762,13 @@ public partial class MainWindow : Window
         {
             Text = labelText,
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
-            MaxHeight = 34 * S,
+            MaxHeight = LabelHeight,
             Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
         };
         // 小字号必须走 Display 模式（对齐像素网格），配合 MoveIcon 的整数坐标吸附——
@@ -815,13 +818,13 @@ public partial class MainWindow : Window
         var ft = new FormattedText(text,
             System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
             new Typeface(LabelFontFamily, FontStyles.Normal, LabelFontWeight, FontStretches.Normal),
-            12 * S, Brushes.White, null, TextFormattingMode.Display,
+            LabelSize, Brushes.White, null, TextFormattingMode.Display,
             VisualTreeHelper.GetDpi(this).PixelsPerDip)
         {
             MaxTextWidth = CellW - 14 * S, // labelPlate MaxWidth(CellW-4·S) − 左右 Padding(5·S+5·S)
             Trimming = TextTrimming.None,
         };
-        return ft.Height <= 34.5 * S; // TextBlock MaxHeight=34·S（两行）
+        return ft.Height <= LabelHeight + 0.5;
     }
 
     /// <summary>Finder 行为：溢出两行时中间省略，尾部保"扩展名+3 字符"（尾部区分度高，
@@ -1518,7 +1521,7 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
@@ -2132,7 +2135,7 @@ public partial class MainWindow : Window
         var label = new TextBlock
         {
             Foreground = Brushes.White,
-            FontSize = 12 * S,
+            FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
@@ -2859,7 +2862,7 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case Key.F5:
-                Desktop.RefreshAll();
+                Desktop.RefreshIcons();
                 e.Handled = true;
                 break;
             // Ctrl +/-：按档位调整图标大小（与 Finder 一致；主键区与小键盘的 +/- 都接）。
@@ -3137,7 +3140,7 @@ public partial class MainWindow : Window
         _renameBox = new TextBox
         {
             Text = editText,
-            FontSize = 12 * S,
+            FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             MinWidth = 60 * S,

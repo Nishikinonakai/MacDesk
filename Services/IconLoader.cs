@@ -14,6 +14,7 @@ internal static class IconLoader
 {
     private const int SIIGBF_BIGGERSIZEOK = 0x01;
     private const int SIIGBF_ICONONLY = 0x04;
+    private const int SIIGBF_SCALEUP = 0x100;
 
     /// <summary>图标随文件本体变化的类型：共享会张冠李戴。</summary>
     private static readonly HashSet<string> PerFileIcon = new(StringComparer.OrdinalIgnoreCase)
@@ -30,6 +31,11 @@ internal static class IconLoader
     };
 
     private static readonly Dictionary<string, ImageSource?> _shared = new(StringComparer.OrdinalIgnoreCase);
+
+    public static void ClearShared()
+    {
+        lock (_shared) _shared.Clear();
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SIZE { public int cx, cy; }
@@ -61,12 +67,12 @@ internal static class IconLoader
         bool shareable = ext.Length > 1
             && !PerFileIcon.Contains(ext) && !ThumbnailExts.Contains(ext)
             && !path.StartsWith("::") && !System.IO.Directory.Exists(path);
-        if (!shareable) return LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK);
+        if (!shareable) return LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP);
 
         string key = $"{ext}|{sizePx}";
         lock (_shared)
             if (_shared.TryGetValue(key, out var cached)) return cached;
-        var src = LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY);
+        var src = LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP | SIIGBF_ICONONLY);
         if (src != null)
             lock (_shared) _shared[key] = src;
         return src;

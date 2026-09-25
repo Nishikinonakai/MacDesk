@@ -13,6 +13,7 @@ internal sealed class DesktopItemProvider : IDisposable
     private readonly List<FileSystemWatcher> _watchers = new();
 
     public event Action? Changed;
+    public event Action? IconsChanged;
 
     public static string UserDesktop => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
     public static string PublicDesktop => Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
@@ -29,12 +30,32 @@ internal sealed class DesktopItemProvider : IDisposable
             if (!Directory.Exists(dir)) continue;
             var w = new FileSystemWatcher(dir)
             {
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Attributes,
+                IncludeSubdirectories = true,
                 EnableRaisingEvents = true,
             };
-            w.Created += (_, _) => Changed?.Invoke();
-            w.Deleted += (_, _) => Changed?.Invoke();
-            w.Renamed += (_, _) => Changed?.Invoke();
+            bool OnDesktopRoot(string path) => string.Equals(Path.GetDirectoryName(path), dir, StringComparison.OrdinalIgnoreCase);
+            bool IsFolderIconConfig(string path) =>
+                Path.GetFileName(path).Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(Path.GetDirectoryName(Path.GetDirectoryName(path)), dir, StringComparison.OrdinalIgnoreCase);
+            void OnName(string path)
+            {
+                if (OnDesktopRoot(path)) Changed?.Invoke();
+                if (IsFolderIconConfig(path)) IconsChanged?.Invoke();
+            }
+            void OnContent(string path)
+            {
+                string ext = Path.GetExtension(path);
+                if (IsFolderIconConfig(path) || OnDesktopRoot(path) &&
+                    (ext.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".url", StringComparison.OrdinalIgnoreCase) ||
+                     ext.Equals(".ico", StringComparison.OrdinalIgnoreCase)))
+                    IconsChanged?.Invoke();
+            }
+            w.Created += (_, e) => OnName(e.FullPath);
+            w.Deleted += (_, e) => OnName(e.FullPath);
+            w.Renamed += (_, e) => { OnName(e.OldFullPath); OnName(e.FullPath); };
+            w.Changed += (_, e) => OnContent(e.FullPath);
             _watchers.Add(w);
         }
     }

@@ -940,6 +940,24 @@ internal sealed class SettingsWindow : Window
         sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
             L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
         sizeSec.Children.Add(Separator());
+        var labelSize = new Slider
+        {
+            Minimum = 9, Maximum = 24, Value = Config.IconLabelSize,
+            Width = 170, TickFrequency = 1, IsSnapToTickEnabled = true,
+            ToolTip = Config.IconLabelSize.ToString(),
+        };
+        labelSize.ValueChanged += (_, _) =>
+        {
+            int value = (int)Math.Round(labelSize.Value);
+            labelSize.ToolTip = value.ToString();
+            if (value == Config.IconLabelSize) return;
+            Config.IconLabelSize = value;
+            Config.Save();
+            Desktop.RebuildVisuals();
+        };
+        sizeSec.Children.Add(Row(L.T("标签字号", "Label Size"), labelSize,
+            L.T("独立于图标大小，调整后立即应用。", "Independent of icon size; applies immediately.")));
+        sizeSec.Children.Add(Separator());
         var fontBox = new ComboBox
         {
             Width = 220,
@@ -985,6 +1003,11 @@ internal sealed class SettingsWindow : Window
             Desktop.RebuildVisuals();
         };
         sizeSec.Children.Add(Row(L.T("标签字重", "Label Weight"), weightBox));
+        sizeSec.Children.Add(Separator());
+        var refreshIcons = new Button { Content = L.T("刷新图标", "Refresh Icons"), Padding = new Thickness(12, 4, 12, 4) };
+        refreshIcons.Click += (_, _) => Desktop.RefreshIcons();
+        sizeSec.Children.Add(Row(L.T("图标缓存", "Icon Cache"), refreshIcons,
+            L.T("重新读取快捷方式和文件夹图标，也可在桌面按 F5。", "Reload shortcut and folder icons, or press F5 on the desktop.")));
         p.Children.Add(Card(sizeSec));
 
         p.Children.Add(Section(L.T("颜色", "Color")));
