@@ -667,7 +667,7 @@ public partial class MainWindow : Window
             TextTrimming = TextTrimming.CharacterEllipsis,
             MaxHeight = LabelHeight,
             Opacity = 0.9,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = new DropShadowEffect { BlurRadius = 0, ShadowDepth = 1, Opacity = 0.85 },
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
@@ -769,7 +769,7 @@ public partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
             TextTrimming = TextTrimming.CharacterEllipsis, // 测量偏差时的兜底
             MaxHeight = LabelHeight,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = new DropShadowEffect { BlurRadius = 0, ShadowDepth = 1, Opacity = 0.85 },
         };
         // 小字号必须走 Display 模式（对齐像素网格），配合 MoveIcon 的整数坐标吸附——
         // 亚像素落位是"有的标签清晰有的糊"的元凶
@@ -1525,7 +1525,7 @@ public partial class MainWindow : Window
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = new DropShadowEffect { BlurRadius = 0, ShadowDepth = 1, Opacity = 0.85 },
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
@@ -2139,7 +2139,7 @@ public partial class MainWindow : Window
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             TextAlignment = TextAlignment.Center,
-            Effect = new DropShadowEffect { BlurRadius = 3, ShadowDepth = 1, Opacity = 0.85 },
+            Effect = new DropShadowEffect { BlurRadius = 0, ShadowDepth = 1, Opacity = 0.85 },
         };
         TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
         var labelPlate = new Border
