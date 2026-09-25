@@ -2278,9 +2278,11 @@ public partial class MainWindow : Window
     private static void MoveElement(FrameworkElement el, double l, double t, bool animated,
         IEasingFunction ease, int ms)
     {
-        // 落点吸附整数 DIU：亚像素坐标会让整个图标（尤其文字）渲染发糊
-        l = Math.Round(l);
-        t = Math.Round(t);
+        // 落点必须按本屏物理像素吸附：整数 DIU 在 125%/150% DPI 下仍可能
+        // 落在半个物理像素上，让文字和整张缓存纹理发糊。
+        var dpi = VisualTreeHelper.GetDpi(el);
+        l = Math.Round(l * dpi.DpiScaleX, MidpointRounding.AwayFromZero) / dpi.DpiScaleX;
+        t = Math.Round(t * dpi.DpiScaleY, MidpointRounding.AwayFromZero) / dpi.DpiScaleY;
         if (animated && AnimationsSuppressed(el)) animated = false;
         if (animated && !double.IsNaN(Canvas.GetLeft(el)))
         {

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using MacDesk.Interop;
@@ -88,7 +89,10 @@ internal static class IconLoader
             var factory = (IShellItemImageFactory)o;
             if (factory.GetImage(new SIZE { cx = sizePx, cy = sizePx }, flags, out hbm) != 0 || hbm == IntPtr.Zero)
                 return null;
-            return HBitmapToSource(hbm);
+            string ext = System.IO.Path.GetExtension(path);
+            bool normalizeSmallIcon = (flags & SIIGBF_ICONONLY) != 0 || PerFileIcon.Contains(ext)
+                || System.IO.Directory.Exists(path) || path.StartsWith("::");
+            return HBitmapToSource(hbm, normalizeSmallIcon);
         }
         catch
         {
@@ -101,7 +105,7 @@ internal static class IconLoader
     }
 
     /// <summary>GetDIBits 手工转 BGRA，保住 CreateBitmapSourceFromHBitmap 会丢的 alpha 通道。</summary>
-    private static BitmapSource? HBitmapToSource(IntPtr hbm)
+    private static BitmapSource? HBitmapToSource(IntPtr hbm, bool normalizeSmallIcon)
     {
         var bm = new BITMAP();
         if (GetObject(hbm, Marshal.SizeOf<BITMAP>(), ref bm) == 0) return null;
@@ -153,6 +157,27 @@ internal static class IconLoader
 
         var src = BitmapSource.Create(bm.bmWidth, bm.bmHeight, 96, 96, PixelFormats.Pbgra32, null, bits, stride);
         src.Freeze();
+        if (normalizeSmallIcon)
+        {
+            int minX = bm.bmWidth, minY = bm.bmHeight, maxX = -1, maxY = -1;
+            for (int y = 0; y < bm.bmHeight; y++)
+                for (int x = 0; x < bm.bmWidth; x++)
+                    if (bits[y * stride + x * 4 + 3] > 128)
+                    {
+                        minX = Math.Min(minX, x); minY = Math.Min(minY, y);
+                        maxX = Math.Max(maxX, x); maxY = Math.Max(maxY, y);
+                    }
+            int contentW = maxX - minX + 1, contentH = maxY - minY + 1;
+            // 有些 Shell 图标在 256px 透明画布中央只绘制 32/64px 源。Image 控件
+            // 缩放整张画布会保留留白，图形仍显得很小；只对明显偏小的图标裁掉留白。
+            if (contentW > 0 && contentH > 0 &&
+                contentW <= bm.bmWidth / 2 && contentH <= bm.bmHeight / 2)
+            {
+                var cropped = new CroppedBitmap(src, new Int32Rect(minX, minY, contentW, contentH));
+                cropped.Freeze();
+                return cropped;
+            }
+        }
         return src;
     }
 }

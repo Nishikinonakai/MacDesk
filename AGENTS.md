@@ -32,5 +32,4 @@
 
 ## Windows validation
 
-- Test desktop-facing behavior only during an approved idle window. Existing user desktop state and the installed release must be preserved.
 - Use the app's graceful `--quit` behavior before replacing files in a test deployment; do not force-kill the normal process as a routine deployment step.
