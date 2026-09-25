@@ -208,10 +208,23 @@ public partial class MainWindow : Window
         // ── 以下共享职责只挂主屏窗口：显示变化、热键、菜单命令（作用于所有窗口） ──
         _msgWin = new MessageWindow();
         _msgWin.DisplayChanged += (_, _) => Dispatcher.BeginInvoke(() => { _displayDebounce!.Stop(); _displayDebounce.Start(); });
+        _msgWin.DevicesChanged += () => Dispatcher.BeginInvoke(Desktop.QueueDriveRefresh);
         _msgWin.WorkAreaChanged += () => Dispatcher.BeginInvoke(() => { _workAreaDebounce!.Stop(); _workAreaDebounce.Start(); });
         _msgWin.QuitRequested += () => Dispatcher.BeginInvoke(App.BeginUserQuit);
         // 双保险：隐藏窗口收不到广播时靠 SystemEvents
         SystemEvents.DisplaySettingsChanged += OnSystemDisplayChanged;
+        var topologyPoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        topologyPoll.Tick += (_, _) =>
+        {
+            if (_attached && !_handoffInProgress && Desktop.HasTopologyChanged())
+            {
+                Log.Write("display topology polling detected a missed change");
+                _displayDebounce!.Stop();
+                _displayDebounce.Start();
+            }
+        };
+        Closed += (_, _) => topologyPoll.Stop();
+        topologyPoll.Start();
 
         CommandChannel.Listen("Arrange", () => Dispatcher.BeginInvoke(ArrangeAllWithUndo));
         CommandChannel.Listen("Undo", () => Dispatcher.BeginInvoke(UndoArrange));
@@ -347,7 +360,7 @@ public partial class MainWindow : Window
                 int seeded = 0;
                 foreach (var iv in _icons.Values)
                 {
-                    if (!seed.Icons.TryGetValue(Path.GetFileName(iv.Entry.Path), out var p)) continue;
+                    if (!seed.Icons.TryGetValue(iv.Entry.LayoutName, out var p)) continue;
                     MoveElement(iv.Root, p[0] * kx, p[1] * ky, false, EaseGlide, GlideMs);
                     seeded++;
                 }
@@ -390,7 +403,7 @@ public partial class MainWindow : Window
     /// 滑向推导位（macOS 式 morph），全部就绪发 Ready，本进程才退休。超时 = 回退旧路径。</summary>
     private void OnDisplayChangedDebounced()
     {
-        if (!_attached || _handoffInProgress) return;
+        if (!_attached || _handoffInProgress || !Desktop.HasTopologyChanged()) return;
         _handoffInProgress = true;
         HandoffRetiring = true; // 所有窗口退场时保留 WE 收编现场给替身
         // 重挂子窗口的活体改尺寸在 WPF/DPI 虚拟化下不可靠（多次实测：MoveWindow 后布局尺寸卡旧值）。
@@ -446,7 +459,7 @@ public partial class MainWindow : Window
         {
             double l = Canvas.GetLeft(iv.Root), t = Canvas.GetTop(iv.Root);
             if (double.IsNaN(l) || double.IsNaN(t)) continue;
-            mon.Icons[Path.GetFileName(iv.Entry.Path)] = new[] { l, t };
+            mon.Icons[iv.Entry.LayoutName] = new[] { l, t };
         }
         seed[MonKey] = mon;
     }
@@ -555,9 +568,11 @@ public partial class MainWindow : Window
     /// <summary>协调器分发本窗口的图标子集（归属本显示器 + 主屏兜底的孤儿）。</summary>
     internal void RefreshItems(IReadOnlyList<DesktopEntry> entries, IReadOnlyList<string>? missingNames = null)
     {
-        var alive = new HashSet<string>(entries.Select(en => en.Path));
+        var alive = entries.ToDictionary(en => en.Path, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var gone in _icons.Keys.Where(k => !alive.Contains(k)).ToList())
+        foreach (var gone in _icons.Keys.Where(k => !alive.TryGetValue(k, out var en)
+            || _icons[k].Entry.DisplayName != en.DisplayName
+            || _icons[k].Entry.LayoutName != en.LayoutName).ToList())
         {
             var iv = _icons[gone];
             IconCanvas.Children.Remove(iv.Root);
@@ -571,7 +586,7 @@ public partial class MainWindow : Window
         {
             if (_icons.ContainsKey(en.Path)) continue;
             var iv = CreateIconVisual(en);
-            iv.Canon = Desktop.EffectiveCanon(Path.GetFileName(en.Path));
+            iv.Canon = Desktop.EffectiveCanon(en.LayoutName);
             _icons[en.Path] = iv;
             IconCanvas.Children.Add(iv.Root);
             added = true;
@@ -1087,7 +1102,7 @@ public partial class MainWindow : Window
         // 规范布局是唯一事实来源：重排前全员取有效 Canon（含归属离场显示器的孤儿——推导显示、不回写）
         foreach (var iv in _icons.Values)
         {
-            iv.Canon = Desktop.EffectiveCanon(Path.GetFileName(iv.Entry.Path));
+            iv.Canon = Desktop.EffectiveCanon(iv.Entry.LayoutName);
             // 自愈：拖拽/剪切之外不允许有半透明残留（曾有捕获被打断导致留影卡死的实例）
             if (iv.Root.Opacity < 1 && !_dragGhosts.Contains(iv) && !_cutIcons.Contains(iv))
                 iv.Root.Opacity = 1;
@@ -1146,7 +1161,7 @@ public partial class MainWindow : Window
             placed.Add((col, row));
             var (l, t) = CellPos(col, row);
             iv.Canon = CellToCanon(col, row);
-            LayoutFile.Set(MonKey, Path.GetFileName(iv.Entry.Path), iv.Canon);
+            LayoutFile.Set(MonKey, iv.Entry.LayoutName, iv.Canon);
             MoveIcon(iv, l, t, animated);
             assignedNew = true;
         }
@@ -2443,7 +2458,8 @@ public partial class MainWindow : Window
         var group = _selection.Contains(iv) && _selection.Count > 1
             ? _selection.ToList() : new List<IconVisual> { iv };
         var allPaths = group.Select(g => g.Entry.Path).ToArray();
-        var filePaths = allPaths.Where(path => !path.StartsWith("::")).ToArray();
+        var filePaths = allPaths.Where(path => !path.StartsWith("::")
+            && !DesktopItemProvider.IsDriveRoot(path)).ToArray();
 
         iv.MouseDown = false;
         iv.Root.ReleaseMouseCapture();
@@ -2646,7 +2662,7 @@ public partial class MainWindow : Window
         // 多选且同属一个父目录 → 合并菜单；否则只对点中的那个
         var sel = _selection.Select(s => s.Entry.Path).ToList();
         string[] paths;
-        if (sel.Count > 1 && !sel.Any(p => p.StartsWith("::"))
+        if (sel.Count > 1 && !sel.Any(p => p.StartsWith("::") || DesktopItemProvider.IsDriveRoot(p))
             && sel.Select(Path.GetDirectoryName).Distinct().Count() == 1)
             paths = sel.ToArray();
         else
@@ -2889,7 +2905,8 @@ public partial class MainWindow : Window
 
     private void ClipboardCopyCut(bool cut)
     {
-        var items = _selection.Where(s => !s.Entry.Path.StartsWith("::")).ToList();
+        var items = _selection.Where(s => !s.Entry.Path.StartsWith("::")
+            && !DesktopItemProvider.IsDriveRoot(s.Entry.Path)).ToList();
         if (items.Count == 0) return;
         var paths = new StringCollection();
         foreach (var s in items) paths.Add(s.Entry.Path);
@@ -2917,7 +2934,8 @@ public partial class MainWindow : Window
         try
         {
             if (!Clipboard.ContainsFileDropList()) return;
-            var files = Clipboard.GetFileDropList().Cast<string>().Where(f => !string.IsNullOrEmpty(f)).ToArray();
+            var files = Clipboard.GetFileDropList().Cast<string>().Where(f => !string.IsNullOrEmpty(f)
+                && !DesktopItemProvider.IsDriveRoot(f)).ToArray();
             if (files.Length == 0) return;
             bool cut = ClipboardWantsMove();
 
@@ -3024,7 +3042,8 @@ public partial class MainWindow : Window
     /// 选中项全部移入、进入重命名。多选右键菜单的自定义项触发。</summary>
     private void CreateFolderWithSelection()
     {
-        var items = _selection.Select(s => s.Entry.Path).Where(p => !p.StartsWith("::")).ToArray();
+        var items = _selection.Select(s => s.Entry.Path).Where(p => !p.StartsWith("::")
+            && !DesktopItemProvider.IsDriveRoot(p)).ToArray();
         if (items.Length == 0) return;
         try
         {
@@ -3087,7 +3106,7 @@ public partial class MainWindow : Window
     private void DeleteSelection()
     {
         var paths = _selection.Select(s => s.Entry.Path)
-                              .Where(p => !p.StartsWith("::")).ToList();
+                              .Where(p => !p.StartsWith("::") && !DesktopItemProvider.IsDriveRoot(p)).ToList();
         if (paths.Count == 0) return;
         var op = new Native.SHFILEOPSTRUCT
         {
@@ -3104,7 +3123,7 @@ public partial class MainWindow : Window
 
     private void StartRename(IconVisual iv)
     {
-        if (iv.Entry.Path.StartsWith("::")) return; // 回收站不可改
+        if (iv.Entry.Path.StartsWith("::") || DesktopItemProvider.IsDriveRoot(iv.Entry.Path)) return;
         CancelRename();
 
         string fileName = Path.GetFileName(iv.Entry.Path);
@@ -3164,7 +3183,7 @@ public partial class MainWindow : Window
         static double L(IconVisual i) { var v = Canvas.GetLeft(i.Root); return double.IsNaN(v) ? 0 : v; }
         static double T(IconVisual i) { var v = Canvas.GetTop(i.Root); return double.IsNaN(v) ? 0 : v; }
         var ordered = VisibleIcons
-            .Where(i => !i.Entry.Path.StartsWith("::"))
+            .Where(i => !i.Entry.Path.StartsWith("::") && !DesktopItemProvider.IsDriveRoot(i.Entry.Path))
             .OrderByDescending(i => Math.Round(L(i)))
             .ThenBy(T)
             .ToList();
@@ -3395,7 +3414,8 @@ public partial class MainWindow : Window
         {
             // 组内祖先已覆盖的后代剔除：文件夹和它展开的子项混拖时，SHFileOperation 收到
             // 重叠路径会先移走爹、再对儿子报"找不到文件"
-            var realOwn = PruneDescendantPaths(own.Where(p => !p.StartsWith("::")).ToArray());
+            var realOwn = PruneDescendantPaths(own.Where(p => !p.StartsWith("::")
+                && !DesktopItemProvider.IsDriveRoot(p)).ToArray());
             if (realOwn.Length > 0 && DropTargetIconAt(dropPos, own) is { } target)
             {
                 if (target.Entry.Path == DesktopItemProvider.RecycleBin) { DeleteViaShell(realOwn); return; }
@@ -3424,6 +3444,7 @@ public partial class MainWindow : Window
 
         if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
         var paths = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+        if (paths.Any(DesktopItemProvider.IsDriveRoot)) return;
         if (DropTargetIconAt(dropPos, paths) is { } t2)
         {
             // 外来/桌面文件落在文件夹图标上 = 移入；落在回收站图标上 = 删除（Finder/Explorer 语义）
@@ -3517,7 +3538,7 @@ public partial class MainWindow : Window
         {
             var iv = _icons.Values.FirstOrDefault(i =>
                 string.Equals(i.Entry.Path, p, StringComparison.OrdinalIgnoreCase));
-            string name = Path.GetFileName(p);
+            string name = iv?.Entry.LayoutName ?? DesktopItemProvider.LayoutName(p);
             if (string.IsNullOrEmpty(name)) name = p; // 虚拟项兜底
             Point rel = ctx != null && ctx.RelOffsets.TryGetValue(p, out var r)
                 ? r : new Point(cascade, cascade);

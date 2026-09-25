@@ -2,7 +2,10 @@ using System.IO;
 
 namespace MacDesk.Services;
 
-public sealed record DesktopEntry(string Path, string DisplayName);
+public sealed record DesktopEntry(string Path, string DisplayName, string? LayoutId = null)
+{
+    public string LayoutName => LayoutId ?? DesktopItemProvider.LayoutName(Path);
+}
 
 /// <summary>合并用户桌面与公共桌面，FileSystemWatcher 监听变化。</summary>
 internal sealed class DesktopItemProvider : IDisposable
@@ -13,6 +16,11 @@ internal sealed class DesktopItemProvider : IDisposable
 
     public static string UserDesktop => Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
     public static string PublicDesktop => Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory);
+    public static bool IsDriveRoot(string path) => Path.GetPathRoot(path) is { } root
+        && string.Equals(root, path, StringComparison.OrdinalIgnoreCase);
+    public static string LayoutName(string path) => IsDriveRoot(path)
+        ? ExternalDrives.LayoutName(path)
+        : Path.GetFileName(path);
 
     public DesktopItemProvider()
     {
@@ -65,6 +73,7 @@ internal sealed class DesktopItemProvider : IDisposable
                 result.Add(new DesktopEntry(path, display));
             }
         }
+        result.AddRange(ExternalDrives.Enumerate());
         return result;
     }
 

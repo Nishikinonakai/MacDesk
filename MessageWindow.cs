@@ -17,6 +17,7 @@ internal sealed class MessageWindow : IDisposable
     public IntPtr Handle => _source.Handle;
 
     public event Action<int, int>? DisplayChanged; // (widthPx, heightPx)
+    public event Action? DevicesChanged;
     public event Action? WorkAreaChanged;          // 任务栏挪位/改高/隐藏（SPI_SETWORKAREA）
     public event Action? QuitRequested;
 
@@ -58,6 +59,10 @@ internal sealed class MessageWindow : IDisposable
                 break;
             case WM_DPICHANGED: // 只改缩放比例不改分辨率时走这条
                 DisplayChanged?.Invoke(0, 0);
+                break;
+            case 0x0219 /* WM_DEVICECHANGE */ when wParam.ToInt64() is 0x8000 /* arrival */
+                or 0x8004 /* removal */ or 0x0007 /* devnodes changed */:
+                DevicesChanged?.Invoke();
                 break;
             // 任务栏变化只广播这个，不发显示器消息——网格避让工作区（rcWork）靠它保鲜
             case 0x001A /* WM_SETTINGCHANGE */ when wParam.ToInt64() == 0x002F /* SPI_SETWORKAREA */:

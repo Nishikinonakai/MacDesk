@@ -80,6 +80,9 @@ the new installer and replaces itself silently, then relaunches.
 - **Desktop icon toggles** — show or hide This PC, User's Files, Network,
   Control Panel and the Recycle Bin from Settings; the first run follows your
   native desktop's current choices.
+- **External disk icons.** USB drives, SD cards, and USB hard disks appear on
+  the desktop when mounted and disappear when removed. Double-click to open or
+  use the Windows context menu; the same volume returns to its saved position.
 - **Layout safety.** A rolling daily backup of the layout file (7 kept) plus
   **Export / Import Layout** in Settings for machine migrations. Imported
   entries whose file doesn't exist on the new machine show as macOS-style

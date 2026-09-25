@@ -22,6 +22,8 @@ internal static class Desktop
     public static string PrimaryKey => Monitors[0].Key;
 
     private static DispatcherTimer? _fsDebounce;
+    private static DispatcherTimer? _driveDebounce;
+    private static string _driveSignature = "";
     private static readonly HashSet<string> _attachedKeys = new();
 
     public static void Init()
@@ -54,6 +56,8 @@ internal static class Desktop
         backupTimer.Start();
         Config = Settings.Load();
         Provider = new DesktopItemProvider();
+        _driveSignature = DriveSignature();
+        Log.Write($"external drives at startup: {_driveSignature}");
 
         // OOBE 首启：布局档为空（新装）时询问是否导入原生桌面的现有摆放
         if (Layout.IsEmpty)
@@ -83,6 +87,15 @@ internal static class Desktop
             _fsDebounce.Stop();
             _fsDebounce.Start();
         });
+        _driveDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
+        _driveDebounce.Tick += (_, _) =>
+        {
+            _driveDebounce.Stop();
+            CheckDrives();
+        };
+        var drivePoll = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        drivePoll.Tick += (_, _) => CheckDrives();
+        drivePoll.Start();
 
         // 壁纸变化跟随，双通道：
         // ①事件快路径（SystemEvents 包装 WM_SETTINGCHANGE）——SPI 广播型换壁纸秒级跟；
@@ -138,6 +151,37 @@ internal static class Desktop
             Config.DisplayScope, Config.SelectedMonitors);
     }
 
+    public static void QueueDriveRefresh()
+    {
+        _driveDebounce?.Stop();
+        _driveDebounce?.Start();
+    }
+
+    private static string DriveSignature() => string.Join("|", ExternalDrives.Enumerate()
+        .OrderBy(e => e.Path, StringComparer.OrdinalIgnoreCase)
+        .Select(e => e.Path + e.DisplayName + e.LayoutName));
+
+    private static void CheckDrives()
+    {
+        string current = DriveSignature();
+        if (current == _driveSignature) return;
+        Log.Write($"external drives changed: {_driveSignature} -> {current}");
+        _driveSignature = current;
+        RefreshAll();
+    }
+
+    public static bool HasTopologyChanged()
+    {
+        var current = Interop.Monitors.GetAll();
+        return current.Count > 0 && (current.Count != Monitors.Count ||
+            !current.Zip(Monitors).All(p => p.First.Key == p.Second.Key &&
+                p.First.Device == p.Second.Device && p.First.Dpi == p.Second.Dpi &&
+                p.First.Physical.Left == p.Second.Physical.Left &&
+                p.First.Physical.Top == p.Second.Physical.Top &&
+                p.First.Physical.Right == p.Second.Physical.Right &&
+                p.First.Physical.Bottom == p.Second.Physical.Bottom));
+    }
+
     /// <summary>纯路由策略，参数化显示器集合以便在没有多屏硬件时覆盖分配行为。</summary>
     internal static string ResolveWindowKey(string? owner, string primaryKey,
         IReadOnlyCollection<string> attachedKeys, IReadOnlyList<string> monitorKeys,
@@ -174,7 +218,7 @@ internal static class Desktop
                 Config.Save();
         }
         var present = new HashSet<string>(
-            all.Select(en => System.IO.Path.GetFileName(en.Path)), StringComparer.OrdinalIgnoreCase);
+            all.Select(en => en.LayoutName), StringComparer.OrdinalIgnoreCase);
         var returned = Layout.MissingListed.Where(present.Contains).ToList();
         if (returned.Count > 0)
         {
@@ -186,7 +230,7 @@ internal static class Desktop
         {
             if (!w.Attached) continue;
             var subset = all.Where(en =>
-                EffectiveWindowKey(System.IO.Path.GetFileName(en.Path)) == w.Monitor.Key).ToList();
+                EffectiveWindowKey(en.LayoutName) == w.Monitor.Key).ToList();
             var missSubset = missing.Where(n => EffectiveWindowKey(n) == w.Monitor.Key).ToList();
             w.RefreshItems(subset, missSubset);
         }
@@ -197,7 +241,7 @@ internal static class Desktop
     public static void OnLayoutImported()
     {
         var present = new HashSet<string>(
-            Provider.Enumerate().Select(en => System.IO.Path.GetFileName(en.Path)), StringComparer.OrdinalIgnoreCase);
+            Provider.Enumerate().Select(en => en.LayoutName), StringComparer.OrdinalIgnoreCase);
         Layout.SetMissingList(Layout.AllNames().Where(n => !present.Contains(n)));
         RefreshAll();
         LayoutAllWindows(animated: true);
