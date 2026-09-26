@@ -316,27 +316,28 @@ internal sealed class SettingsWindow : Window
 
     private static SolidColorBrush Rgb(byte r, byte g, byte b) => new(Color.FromRgb(r, g, b));
 
-    /// <summary>图标大小滑杆（macOS Dock 设置观感）：轨道 + 白圆钮，**无极调节**（拖到任意大小），
-    /// 仅默认档一个强调色刻度作磁吸点；松手才应用一次（拖动中重建会卡）。Ctrl +/- 另走离散档位。
-    /// 自绘（本项目控件全代码构，避开 WPF Slider 模板 Track 的 FrameworkElementFactory 坑）。</summary>
-    private UIElement IconSizeSlider()
+    /// <summary>尺寸滑杆：只在默认值处磁吸；拖动时只更新滑钮，松手才应用一次。
+    /// 自绘以保持图标与标签字号的外观和交互一致。</summary>
+    private UIElement SizeSlider(double minimum, double maximum, double defaultValue,
+        double keyStep, string name, Func<double> currentValue,
+        Func<double, double> quantize, Action<double> apply)
     {
         const double W = 220, D = 18, R = D / 2, RailH = 4, MidY = 12;
         var accent = new SolidColorBrush(Accent.Current);
 
-        // 滑杆值域 32..128（下探到 32：4K 高 DPI 下 64 傻大，小端要够得着——实测 40 舒适、32 紧凑）
-        double CenterX(int value) => R + (Math.Clamp(value, 32, 128) - 32) / 96.0 * (W - D);
+        double CenterX(double value) => R + (Math.Clamp(value, minimum, maximum) - minimum) /
+            (maximum - minimum) * (W - D);
         const double SnapPx = 8; // 默认档磁吸半径（px）
-        double defaultX = CenterX(Desktop.DefaultIconSize);
-        // 无极：像素→连续整数尺寸；只在靠近默认档时吸附（滑杆上唯一吸附点；Ctrl +/- 另走档位阶梯）
-        int ValueFromX(double x)
+        double defaultX = CenterX(defaultValue);
+        double ValueFromX(double x)
         {
-            if (Math.Abs(x - defaultX) <= SnapPx) return Desktop.DefaultIconSize;
+            if (Math.Abs(x - defaultX) <= SnapPx) return defaultValue;
             double f = Math.Clamp((x - R) / (W - D), 0, 1);
-            return (int)Math.Round(32 + f * 96);
+            return quantize(minimum + f * (maximum - minimum));
         }
 
-        var canvas = new Canvas { Width = W, Height = 24 };
+        var canvas = new Canvas { Width = W, Height = 24, Focusable = true };
+        System.Windows.Automation.AutomationProperties.SetName(canvas, name);
         var rail = new Border { Width = W - 2, Height = RailH, CornerRadius = new CornerRadius(RailH / 2), Background = FieldBorder };
         Canvas.SetLeft(rail, 1); Canvas.SetTop(rail, MidY - RailH / 2);
         canvas.Children.Add(rail);
@@ -344,9 +345,8 @@ internal sealed class SettingsWindow : Window
         Canvas.SetLeft(fill, 1); Canvas.SetTop(fill, MidY - RailH / 2);
         canvas.Children.Add(fill);
 
-        // 无极调节：只画默认档这一个强调色刻度（唯一吸附点）——不再画各档刻度以免误导成离散停靠
         var dftTick = new Border { Width = 2, Height = 12, Background = accent, CornerRadius = new CornerRadius(1) };
-        Canvas.SetLeft(dftTick, CenterX(Desktop.DefaultIconSize) - 1);
+        Canvas.SetLeft(dftTick, defaultX - 1);
         Canvas.SetTop(dftTick, MidY - 6);
         canvas.Children.Add(dftTick);
 
@@ -361,19 +361,17 @@ internal sealed class SettingsWindow : Window
         Canvas.SetTop(thumb, MidY - R);
         canvas.Children.Add(thumb);
 
-        void Place(int value)
+        void Place(double value)
         {
             double cx = CenterX(value);
             Canvas.SetLeft(thumb, cx - R);
             fill.Width = Math.Max(0, cx - 1);
         }
-        Place(Config.IconSize);
+        Place(currentValue());
 
-        // 拖动时滑钮实时跟随（无极，靠近默认磁吸），松手才真正应用一次——SetIconSize 会 teardown+
-        // 重建桌面（含 shell 重取图），拖动中每变一次都做会连做几十次卡顿；松手应用一次既跟手又不抖。
-        int pending = Config.IconSize;
+        double pending = currentValue();
         void Preview(double x) { pending = ValueFromX(x); Place(pending); }
-        canvas.MouseLeftButtonDown += (_, e) => { canvas.CaptureMouse(); Preview(e.GetPosition(canvas).X); e.Handled = true; };
+        canvas.MouseLeftButtonDown += (_, e) => { canvas.Focus(); canvas.CaptureMouse(); Preview(e.GetPosition(canvas).X); e.Handled = true; };
         canvas.MouseMove += (_, e) =>
         {
             if (e.LeftButton == System.Windows.Input.MouseButtonState.Pressed && canvas.IsMouseCaptured)
@@ -382,9 +380,25 @@ internal sealed class SettingsWindow : Window
         canvas.MouseLeftButtonUp += (_, e) =>
         {
             if (!canvas.IsMouseCaptured) return;
-            canvas.ReleaseMouseCapture();
             Preview(e.GetPosition(canvas).X);
-            Desktop.SetIconSize(pending); // 一次应用（相同值内部早退）
+            apply(pending);
+            canvas.ReleaseMouseCapture();
+        };
+        canvas.LostMouseCapture += (_, _) => Place(currentValue());
+        canvas.KeyDown += (_, e) =>
+        {
+            double next = e.Key switch
+            {
+                System.Windows.Input.Key.Left or System.Windows.Input.Key.Down => currentValue() - keyStep,
+                System.Windows.Input.Key.Right or System.Windows.Input.Key.Up => currentValue() + keyStep,
+                System.Windows.Input.Key.Home => minimum,
+                System.Windows.Input.Key.End => maximum,
+                _ => double.NaN,
+            };
+            if (double.IsNaN(next)) return;
+            e.Handled = true;
+            apply(quantize(Math.Clamp(next, minimum, maximum)));
+            Place(currentValue());
         };
 
         // 端点 + 默认标注
@@ -396,9 +410,9 @@ internal sealed class SettingsWindow : Window
             Canvas.SetLeft(tb, Math.Clamp(centerX - tb.DesiredSize.Width / 2, 0, W - tb.DesiredSize.Width));
             captions.Children.Add(tb);
         }
-        Cap(L.T("小", "Small"), CenterX(32), Subtle, FontWeights.Normal);
-        Cap(L.T("默认", "Default"), CenterX(Desktop.DefaultIconSize), accent, FontWeights.SemiBold);
-        Cap(L.T("大", "Large"), CenterX(128), Subtle, FontWeights.Normal);
+        Cap(L.T("小", "Small"), CenterX(minimum), Subtle, FontWeights.Normal);
+        Cap(L.T("默认", "Default"), defaultX, accent, FontWeights.SemiBold);
+        Cap(L.T("大", "Large"), CenterX(maximum), Subtle, FontWeights.Normal);
 
         var wrap = new StackPanel { Width = W };
         wrap.Children.Add(canvas);
@@ -946,26 +960,21 @@ internal sealed class SettingsWindow : Window
         // 页内按使用频率排：图标大小是本窗口里被反复动得最多的设置，置顶
         p.Children.Add(Section(L.T("图标", "Icons")));
         var sizeSec = new StackPanel();
-        sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"), IconSizeSlider(),
+        sizeSec.Children.Add(Row(L.T("图标大小", "Icon Size"),
+            SizeSlider(32, 128, Desktop.DefaultIconSize, 1, L.T("图标大小", "Icon Size"), () => Config.IconSize,
+                value => Math.Round(value), value => Desktop.SetIconSize((int)value)),
             L.T("拖动可无级调整桌面图标大小，靠近默认时自动吸附；也可按 Ctrl 加 +/- 逐档调整。", "Drag to size desktop icons continuously; snaps to the default when near it. Or press Ctrl with +/- to step through sizes.")));
         sizeSec.Children.Add(Separator());
-        var labelSize = new Slider
-        {
-            Minimum = 9, Maximum = 24, Value = Config.IconLabelSize,
-            Width = 170, TickFrequency = 1, IsSnapToTickEnabled = true,
-            ToolTip = Config.IconLabelSize.ToString(),
-        };
-        labelSize.ValueChanged += (_, _) =>
-        {
-            int value = (int)Math.Round(labelSize.Value);
-            labelSize.ToolTip = value.ToString();
-            if (value == Config.IconLabelSize) return;
-            Config.IconLabelSize = value;
-            Config.Save();
-            Desktop.RebuildVisuals();
-        };
-        sizeSec.Children.Add(Row(L.T("标签字号", "Label Size"), labelSize,
-            L.T("独立于图标大小，调整后立即应用。", "Independent of icon size; applies immediately.")));
+        sizeSec.Children.Add(Row(L.T("标签字号", "Label Size"),
+            SizeSlider(9, 24, Settings.DefaultIconLabelSize, 0.1, L.T("标签字号", "Label Size"), () => Config.IconLabelSize,
+                value => Math.Round(value, 2), value =>
+                {
+                    if (value == Config.IconLabelSize) return;
+                    Config.IconLabelSize = value;
+                    Config.Save();
+                    Desktop.RebuildVisuals();
+                }),
+            L.T("独立于图标大小，靠近默认时自动吸附；松手后应用。", "Independent of icon size; snaps to the default when near it. Applies when released.")));
         sizeSec.Children.Add(Separator());
         var fontBox = new ComboBox
         {

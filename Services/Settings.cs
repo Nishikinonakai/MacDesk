@@ -99,7 +99,8 @@ internal sealed class Settings
     public int IconSize { get; set; } = 64;
 
     /// <summary>桌面标签字号（DIU），独立于图标尺寸。</summary>
-    public int IconLabelSize { get; set; } = 12;
+    public const double DefaultIconLabelSize = 12;
+    public double IconLabelSize { get; set; } = DefaultIconLabelSize;
 
     /// <summary>桌面图标标签字体。从 Windows 已安装字体列表选择；无效名称由 WPF 自动回退。</summary>
     public string IconFontFamily { get; set; } = "Segoe UI";
@@ -198,7 +199,8 @@ internal sealed class Settings
                         .Select(e => e.GetString()!)
                         .ToList();
                 if (doc.RootElement.TryGetProperty("IconSize", out var iz) && iz.ValueKind == JsonValueKind.Number) s.IconSize = iz.GetInt32();
-                if (doc.RootElement.TryGetProperty("IconLabelSize", out var ils) && ils.ValueKind == JsonValueKind.Number) s.IconLabelSize = ils.GetInt32();
+                if (doc.RootElement.TryGetProperty("IconLabelSize", out var ils) && ils.ValueKind == JsonValueKind.Number) s.IconLabelSize = ils.GetDouble();
+                if (doc.RootElement.TryGetProperty("IconLabelSizePrecise", out var ilsp) && ilsp.ValueKind == JsonValueKind.Number) s.IconLabelSize = ilsp.GetDouble();
                 if (doc.RootElement.TryGetProperty("IconFontFamily", out var iff) && iff.ValueKind == JsonValueKind.String)
                     s.IconFontFamily = iff.GetString()!;
                 if (doc.RootElement.TryGetProperty("IconFontWeight", out var ifw) && ifw.ValueKind == JsonValueKind.String)
@@ -231,7 +233,8 @@ internal sealed class Settings
         try
         {
             File.WriteAllText(_file, JsonSerializer.Serialize(
-                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, SpringOpenFolders, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconLabelSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
+                // 旧版用 GetInt32 读 IconLabelSize；保留整数兼容值，精确字号另存。
+                new { FreePlacement, MenuBlacklist, MenuInMainProcess, AccentColor, UseStacks, StackGroupBy, StackFolders, DynamicWallpaper, DynamicNoShadows, DynamicNoAnimations, DynamicTransparent, FastAutostart, AutostartMigrated, Language, SpacePreview, SpringOpenFolders, NativeBackgroundMenu, WidgetAvoidance, WidgetMonoMode, DisplayScope, SelectedMonitors, IconSize, IconLabelSize = (int)Math.Round(IconLabelSize), IconLabelSizePrecise = IconLabelSize, IconFontFamily, IconFontWeight, FirstRowSink, RenderMode, ShowRecycleBin, ShowThisPC, ShowUserFiles, ShowNetwork, ShowControlPanel },
                 new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { }
