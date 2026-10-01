@@ -94,8 +94,10 @@ class Checks
                 var r = (BitmapSource?)Load(red); var b = (BitmapSource?)Load(blue);
                 if (r == null || b == null || ReferenceEquals(r, b)) throw new Exception("Third-party type thumbnail load/cache failed");
                 byte[] rp = new byte[r.PixelWidth * r.PixelHeight * 4], bp = new byte[b.PixelWidth * b.PixelHeight * 4]; r.CopyPixels(rp, r.PixelWidth * 4, 0); b.CopyPixels(bp, b.PixelWidth * 4, 0);
-                if (rp[rp.Length / 2 + 2] <= rp[rp.Length / 2] || bp[bp.Length / 2] <= bp[bp.Length / 2 + 2])
-                    throw new Exception($"Different files did not return distinct content thumbnails: red B/R={rp[rp.Length / 2]}/{rp[rp.Length / 2 + 2]}, blue B/R={bp[bp.Length / 2]}/{bp[bp.Length / 2 + 2]}, provider={clsid}");
+                int rc = (r.PixelHeight / 2 * r.PixelWidth + r.PixelWidth / 2) * 4;
+                int bc = (b.PixelHeight / 2 * b.PixelWidth + b.PixelWidth / 2) * 4;
+                if (rp[rc + 2] <= rp[rc] || bp[bc] <= bp[bc + 2])
+                    throw new Exception($"Different files did not return distinct content thumbnails: red B/R={rp[rc]}/{rp[rc + 2]}, blue B/R={bp[bc]}/{bp[bc + 2]}, provider={clsid}");
                 Console.WriteLine("Unlisted extension with registered provider: two distinct content thumbnails PASS");
             }
             finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath); SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); loader.GetMethod("ClearShared", F)!.Invoke(null, null); }
