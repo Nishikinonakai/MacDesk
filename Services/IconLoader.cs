@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -10,7 +11,8 @@ namespace MacDesk.Services;
 /// 按（扩展名, 尺寸）共享缓存：千文件压测实锤内存大头是每文件 ~0.6MB 的独立位图
 /// （1000 个 .txt 各存一份同样的图标）。共享路径强制 SIIGBF_ICONONLY——类型图标由
 /// 扩展名决定，绝不会把 A 文件的内容缩略图错共享给 B；有缩略图价值的类型（图片/视频/
-/// PDF）和每文件图标类型（exe/lnk/ico…）+ 目录 + 虚拟项保持逐文件加载不缓存。</summary>
+/// PDF）、Shell 注册的第三方缩略图/图标处理器和每文件图标类型（exe/lnk/ico…）
+/// + 目录 + 虚拟项保持逐文件加载不缓存。</summary>
 internal static class IconLoader
 {
     private const int SIIGBF_BIGGERSIZEOK = 0x01;
@@ -32,10 +34,36 @@ internal static class IconLoader
     };
 
     private static readonly Dictionary<string, ImageSource?> _shared = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, bool> _customImages = new(StringComparer.OrdinalIgnoreCase);
+
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
+    private static extern int AssocQueryString(uint flags, uint str, string assoc, string extra,
+        StringBuilder output, ref uint length);
+
+    private static bool HasCustomImage(string ext)
+    {
+        lock (_shared)
+        {
+            if (_customImages.TryGetValue(ext, out bool found)) return found;
+            // Ask Shell to resolve extension/ProgID associations, including third-party providers.
+            // Legacy IExtractImage and per-file icon handlers must not share type bitmaps either.
+            found = new[] { "{E357FCCD-A995-4576-B01F-234630154E96}",
+                "{BB2E617C-0920-11D1-9A0B-00C04FC2D6C1}",
+                "{000214FA-0000-0000-C000-000000000046}" }.Any(iid =>
+            {
+                var output = new StringBuilder(260);
+                uint length = (uint)output.Capacity;
+                return AssocQueryString(0, 16 /* ASSOCSTR_SHELLEXTENSION */, ext, iid, output, ref length) == 0
+                    && output.Length > 0;
+            });
+            _customImages[ext] = found;
+            return found;
+        }
+    }
 
     public static void ClearShared()
     {
-        lock (_shared) _shared.Clear();
+        lock (_shared) { _shared.Clear(); _customImages.Clear(); }
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -67,7 +95,7 @@ internal static class IconLoader
         string ext = System.IO.Path.GetExtension(path);
         bool shareable = ext.Length > 1
             && !PerFileIcon.Contains(ext) && !ThumbnailExts.Contains(ext)
-            && !path.StartsWith("::") && !System.IO.Directory.Exists(path);
+            && !path.StartsWith("::") && !System.IO.Directory.Exists(path) && !HasCustomImage(ext);
         if (!shareable) return LoadUncached(path, sizePx, SIIGBF_BIGGERSIZEOK | SIIGBF_SCALEUP);
 
         string key = $"{ext}|{sizePx}";
@@ -82,10 +110,11 @@ internal static class IconLoader
     private static ImageSource? LoadUncached(string path, int sizePx, int flags)
     {
         IntPtr hbm = IntPtr.Zero;
+        object? o = null;
         try
         {
             var iid = new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
-            SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out object o);
+            SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out o);
             var factory = (IShellItemImageFactory)o;
             if (factory.GetImage(new SIZE { cx = sizePx, cy = sizePx }, flags, out hbm) != 0 || hbm == IntPtr.Zero)
                 return null;
@@ -101,6 +130,7 @@ internal static class IconLoader
         finally
         {
             if (hbm != IntPtr.Zero) Native.DeleteObject(hbm);
+            if (o != null && Marshal.IsComObject(o)) Marshal.ReleaseComObject(o);
         }
     }
 

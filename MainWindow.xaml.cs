@@ -43,7 +43,24 @@ public partial class MainWindow : Window
     // 改档走 Desktop.SetIconSize → RebuildForScale（经现有工厂重建，见那里）。
     private double S => Math.Clamp(Config.IconSize, 32, 160) / 64.0;
     private double LabelSize => Math.Clamp(Config.IconLabelSize, 9, 24);
-    private double LabelHeight => LabelSize * 2.8;
+    private (double Size, string Font, FontWeight Weight, double Dpi)? _labelHeightKey;
+    private double _labelHeight;
+    private double LabelHeight
+    {
+        get
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var key = (LabelSize, LabelFontFamily.Source, LabelFontWeight, dpi.PixelsPerDip);
+            if (_labelHeightKey == key) return _labelHeight;
+            var sample = new TextBlock { Text = "Ag国\nAg国", FontFamily = LabelFontFamily,
+                FontSize = LabelSize, FontWeight = LabelFontWeight };
+            VisualTreeHelper.SetRootDpi(sample, dpi);
+            TextOptions.SetTextFormattingMode(sample, TextFormattingMode.Display);
+            sample.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+            _labelHeightKey = key;
+            return _labelHeight = Math.Max(LabelSize * 2.8, sample.DesiredSize.Height);
+        }
+    }
     private double CellW => Math.Max(96 * S, LabelSize * 6.5);
     private double CellH => Math.Max(104 * S, 76 * S + LabelHeight + 4);
     private double GapX => Math.Max(16 * S, 8);
@@ -815,16 +832,19 @@ public partial class MainWindow : Window
     /// <summary>标签两行内是否放得下（与 TextBlock 同字体/同 Display 模式/同宽度测量）。</summary>
     private bool LabelFits(string text)
     {
-        var ft = new FormattedText(text,
-            System.Globalization.CultureInfo.CurrentUICulture, System.Windows.FlowDirection.LeftToRight,
-            new Typeface(LabelFontFamily, FontStyles.Normal, LabelFontWeight, FontStretches.Normal),
-            LabelSize, Brushes.White, null, TextFormattingMode.Display,
-            VisualTreeHelper.GetDpi(this).PixelsPerDip)
+        var label = new TextBlock
         {
-            MaxTextWidth = CellW - 14 * S, // labelPlate MaxWidth(CellW-4·S) − 左右 Padding(5·S+5·S)
-            Trimming = TextTrimming.None,
+            Text = text,
+            FontFamily = LabelFontFamily,
+            FontWeight = LabelFontWeight,
+            FontSize = LabelSize,
+            TextWrapping = TextWrapping.Wrap,
+            TextTrimming = TextTrimming.None,
         };
-        return ft.Height <= LabelHeight + 0.5;
+        TextOptions.SetTextFormattingMode(label, TextFormattingMode.Display);
+        VisualTreeHelper.SetRootDpi(label, VisualTreeHelper.GetDpi(this));
+        label.Measure(new System.Windows.Size(CellW - 14 * S, double.PositiveInfinity));
+        return label.DesiredSize.Height <= LabelHeight;
     }
 
     /// <summary>Finder 行为：溢出两行时中间省略，尾部保"扩展名+3 字符"（尾部区分度高，
@@ -839,18 +859,20 @@ public partial class MainWindow : Window
             try { ext = Path.GetExtension(name); } catch { }
             if (ext.Length is 0 or > 8) ext = ""; // 无扩展名/超长伪扩展名按纯文本截
             string stem = ext.Length > 0 ? name[..^ext.Length] : name;
-            int tailChars = Math.Min(3, Math.Max(0, stem.Length - 1));
-            string tail = stem[^tailChars..] + ext;
+            int[] elements = System.Globalization.StringInfo.ParseCombiningCharacters(stem);
+            int tailChars = Math.Min(3, Math.Max(0, elements.Length - 1));
+            int tailStart = tailChars == 0 ? stem.Length : elements[elements.Length - tailChars];
+            string tail = stem[tailStart..] + ext;
 
             // 二分最长前缀："prefix…tail" 恰好塞进两行
-            int lo = 1, hi = stem.Length - tailChars;
+            int lo = 0, hi = elements.Length - tailChars;
             while (lo < hi)
             {
                 int mid = (lo + hi + 1) / 2;
-                if (LabelFits($"{stem[..mid]}…{tail}")) lo = mid;
+                if (LabelFits($"{stem[..(mid < elements.Length ? elements[mid] : stem.Length)]}…{tail}")) lo = mid;
                 else hi = mid - 1;
             }
-            return $"{stem[..lo]}…{tail}";
+            return $"{stem[..(lo < elements.Length ? elements[lo] : stem.Length)]}…{tail}";
         }
         catch { return name; } // 测量失败原样返回，交给 CharacterEllipsis 兜底
     }
@@ -3146,7 +3168,8 @@ public partial class MainWindow : Window
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
             MinWidth = 60 * S,
-            MaxWidth = CellW + 40 * S,
+            TextWrapping = TextWrapping.Wrap,
+            AcceptsReturn = false,
             TextAlignment = TextAlignment.Center,
             Padding = new Thickness(2, 0, 2, 1),
         };
@@ -3154,6 +3177,9 @@ public partial class MainWindow : Window
         InputMethod.SetIsInputMethodEnabled(_renameBox, true); // 重命名框放开 IME，允许输入中文名
         iv.Root.CacheMode = null; // 缓存纹理里 TextBox 光标不闪、选区不刷新——编辑期摘缓存
         iv.LabelPlate.Child = _renameBox;
+        System.Windows.Controls.Panel.SetZIndex(iv.Root, 10000);
+        _renameBox.TextChanged += (_, _) => SizeRenameBox(iv);
+        SizeRenameBox(iv);
         _renameBox.KeyDown += (_, ke) =>
         {
             if (ke.Key == Key.Enter) { CommitRename(); ke.Handled = true; }
@@ -3253,7 +3279,34 @@ public partial class MainWindow : Window
     private void RestoreLabel(IconVisual iv)
     {
         iv.LabelPlate.Child = iv.Label;
+        iv.LabelPlate.Width = double.NaN;
+        iv.LabelPlate.MaxWidth = CellW - 4 * S;
+        iv.LabelPlate.Margin = new Thickness(0);
+        System.Windows.Controls.Panel.SetZIndex(iv.Root, 0);
         ApplyCacheMode(iv.Root); // 重命名摘掉的缓存挂回（见 ApplyCacheMode 注释）
+    }
+
+    private void SizeRenameBox(IconVisual iv)
+    {
+        if (_renameBox == null || _renaming != iv) return;
+        // Negative margins let the editor grow beyond the cell without moving the icon.
+        double available = RootGrid.ActualWidth > 0 ? RootGrid.ActualWidth : Width;
+        double width = Math.Min(Math.Max(CellW - 4 * S, 320 * S), available);
+        _renameBox.MaxWidth = Math.Max(1, width - iv.LabelPlate.Padding.Left - iv.LabelPlate.Padding.Right);
+        double left = Canvas.GetLeft(iv.Root);
+        if (double.IsNaN(left)) left = 0;
+        double offset = Math.Clamp((CellW - width) / 2, -left, Math.Max(-left, available - left - width));
+        iv.LabelPlate.MaxWidth = width;
+        iv.LabelPlate.Width = width;
+        double top = Canvas.GetTop(iv.Root);
+        if (double.IsNaN(top)) top = 0;
+        _renameBox.Measure(new System.Windows.Size(_renameBox.MaxWidth, double.PositiveInfinity));
+        double editorHeight = _renameBox.DesiredSize.Height + iv.LabelPlate.Padding.Top + iv.LabelPlate.Padding.Bottom;
+        double screenHeight = RootGrid.ActualHeight > 0 ? RootGrid.ActualHeight : Height;
+        double editorTop = top + 76 * S;
+        double rise = Math.Min(0, screenHeight - editorTop - editorHeight);
+        rise = Math.Max(-editorTop, rise);
+        iv.LabelPlate.Margin = new Thickness(offset, rise, CellW - width - offset, 0);
     }
 
     // ── OLE 拖放（进 & 自我重定位） ───────────────────────────
