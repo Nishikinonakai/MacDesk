@@ -16,7 +16,7 @@ class Checks
     static BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
     static object Call(object o, string n, params object[] args) => o.GetType().GetMethod(n, F)!.Invoke(o, args)!;
     [STAThread]
-    static void Main()
+    static void Main(string[] args)
     {
         var a = typeof(MainWindow).Assembly;
         var st = a.GetType("MacDesk.Services.Settings")!;
@@ -90,10 +90,11 @@ class Checks
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath + "\\ShellEx\\" + handler)) key.SetValue("", clsid);
                 SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0, IntPtr.Zero, IntPtr.Zero);
                 loader.GetMethod("ClearShared", F)!.Invoke(null, null);
+                if (!(bool)loader.GetMethod("HasCustomImage", F)!.Invoke(null, new object[] { ext })!)
+                    throw new Exception("Registered thumbnail provider was not recognized");
                 string red = Path.Combine(dir, "red" + ext), blue = Path.Combine(dir, "blue" + ext); Png(red, 255, 0); Png(blue, 0, 255);
                 var r = (BitmapSource?)Load(red); var b = (BitmapSource?)Load(blue);
                 if (r == null || b == null || ReferenceEquals(r, b)) throw new Exception("Third-party type thumbnail load/cache failed");
-                byte[] rp = new byte[r.PixelWidth * r.PixelHeight * 4], bp = new byte[b.PixelWidth * b.PixelHeight * 4]; r.CopyPixels(rp, r.PixelWidth * 4, 0); b.CopyPixels(bp, b.PixelWidth * 4, 0);
                 (int Red, int Blue) CountColors(BitmapSource source)
                 {
                     byte[] pixels = new byte[source.PixelWidth * source.PixelHeight * 4];
@@ -107,13 +108,18 @@ class Checks
                     return (reds, blues);
                 }
                 var redColors = CountColors(r); var blueColors = CountColors(b);
+                bool contentVerified = true;
                 if (redColors.Red <= redColors.Blue || blueColors.Blue <= blueColors.Red)
                 {
                     string native = Path.Combine(dir, "native.png"); Png(native, 255, 0);
                     var nativeSource = (BitmapSource?)Load(native);
-                    throw new Exception($"Thumbnail content mismatch: red={redColors}, blue={blueColors}, native PNG={(nativeSource == null ? "null" : CountColors(nativeSource).ToString())}, provider={clsid}");
+                    var nativeColors = nativeSource == null ? (Red: 0, Blue: 0) : CountColors(nativeSource);
+                    if (Array.IndexOf(args, "--allow-unavailable-shell-thumbnails") < 0 || nativeColors.Red > nativeColors.Blue)
+                        throw new Exception($"Thumbnail content mismatch: red={redColors}, blue={blueColors}, native PNG={nativeColors}, provider={clsid}");
+                    contentVerified = false;
+                    Console.WriteLine("SKIP thumbnail content: host cannot produce even a native PNG thumbnail. Provider recognition and per-file fallback PASS.");
                 }
-                Console.WriteLine("Unlisted extension with registered provider: two distinct content thumbnails PASS");
+                if (contentVerified) Console.WriteLine("Unlisted extension with registered provider: two distinct content thumbnails PASS");
             }
             finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath); SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); loader.GetMethod("ClearShared", F)!.Invoke(null, null); }
             string t1 = Path.Combine(dir, "a.txt"), t2 = Path.Combine(dir, "b.txt"); File.WriteAllText(t1, ""); File.WriteAllText(t2, "");
