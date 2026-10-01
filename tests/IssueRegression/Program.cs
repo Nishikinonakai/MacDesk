@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -10,6 +11,8 @@ using Microsoft.Win32;
 using MacDesk;
 class Checks
 {
+    [DllImport("shell32.dll")]
+    static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
     static BindingFlags F = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
     static object Call(object o, string n, params object[] args) => o.GetType().GetMethod(n, F)!.Invoke(o, args)!;
     [STAThread]
@@ -83,16 +86,19 @@ class Checks
             if (Registry.CurrentUser.OpenSubKey(keyPath) != null) throw new Exception("Test association already exists");
             try
             {
+                using (var key = Registry.CurrentUser.CreateSubKey(keyPath)) key.SetValue("PerceivedType", "image");
                 using (var key = Registry.CurrentUser.CreateSubKey(keyPath + "\\ShellEx\\" + handler)) key.SetValue("", clsid);
+                SHChangeNotify(0x08000000 /* SHCNE_ASSOCCHANGED */, 0, IntPtr.Zero, IntPtr.Zero);
                 loader.GetMethod("ClearShared", F)!.Invoke(null, null);
                 string red = Path.Combine(dir, "red" + ext), blue = Path.Combine(dir, "blue" + ext); Png(red, 255, 0); Png(blue, 0, 255);
                 var r = (BitmapSource?)Load(red); var b = (BitmapSource?)Load(blue);
                 if (r == null || b == null || ReferenceEquals(r, b)) throw new Exception("Third-party type thumbnail load/cache failed");
                 byte[] rp = new byte[r.PixelWidth * r.PixelHeight * 4], bp = new byte[b.PixelWidth * b.PixelHeight * 4]; r.CopyPixels(rp, r.PixelWidth * 4, 0); b.CopyPixels(bp, b.PixelWidth * 4, 0);
-                if (rp[rp.Length / 2 + 2] <= rp[rp.Length / 2] || bp[bp.Length / 2] <= bp[bp.Length / 2 + 2]) throw new Exception("Different files did not return distinct content thumbnails");
+                if (rp[rp.Length / 2 + 2] <= rp[rp.Length / 2] || bp[bp.Length / 2] <= bp[bp.Length / 2 + 2])
+                    throw new Exception($"Different files did not return distinct content thumbnails: red B/R={rp[rp.Length / 2]}/{rp[rp.Length / 2 + 2]}, blue B/R={bp[bp.Length / 2]}/{bp[bp.Length / 2 + 2]}, provider={clsid}");
                 Console.WriteLine("Unlisted extension with registered provider: two distinct content thumbnails PASS");
             }
-            finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath); loader.GetMethod("ClearShared", F)!.Invoke(null, null); }
+            finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath); SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); loader.GetMethod("ClearShared", F)!.Invoke(null, null); }
             string t1 = Path.Combine(dir, "a.txt"), t2 = Path.Combine(dir, "b.txt"); File.WriteAllText(t1, ""); File.WriteAllText(t2, "");
             var textIcon = Load(t1);
             if (textIcon == null || !ReferenceEquals(textIcon, Load(t2))) throw new Exception("Text icon cache regression");
