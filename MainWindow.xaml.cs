@@ -66,8 +66,7 @@ public partial class MainWindow : Window
     private double GapX => Math.Max(16 * S, 8);
     private double GapY => Math.Max(8 * S, 8);
 
-    private static FontFamily LabelFontFamily => new(string.IsNullOrWhiteSpace(Config.IconFontFamily)
-        ? "Segoe UI" : Config.IconFontFamily);
+    private static FontFamily LabelFontFamily => LabelTypography.Resolve(Config.IconFontFamily);
     private static FontWeight LabelFontWeight => Config.IconFontWeight switch
     {
         "regular" => FontWeights.Regular,
@@ -163,6 +162,7 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent;
         }
         InitializeComponent();
+        TextOptions.SetTextRenderingMode(IconCanvas, TextRenderingMode.Grayscale);
         // 布局取整到像素边界：StackPanel 居中会把标签排到 .5 偏移上，
         // 奇偶宽度不同的标签一半清晰一半糊（机主红圈截图实锤）
         UseLayoutRounding = true;
@@ -3167,18 +3167,23 @@ public partial class MainWindow : Window
             FontSize = LabelSize,
             FontFamily = LabelFontFamily,
             FontWeight = LabelFontWeight,
-            MinWidth = 60 * S,
             TextWrapping = TextWrapping.Wrap,
             AcceptsReturn = false,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             TextAlignment = TextAlignment.Center,
             Padding = new Thickness(2, 0, 2, 1),
         };
         TextOptions.SetTextFormattingMode(_renameBox, TextFormattingMode.Display);
         InputMethod.SetIsInputMethodEnabled(_renameBox, true); // 重命名框放开 IME，允许输入中文名
         iv.Root.CacheMode = null; // 缓存纹理里 TextBox 光标不闪、选区不刷新——编辑期摘缓存
+        // Freeze the existing label width; renaming only grows vertically.
+        iv.LabelPlate.Width = iv.LabelPlate.ActualWidth > 0 ? iv.LabelPlate.ActualWidth : CellW - 4 * S;
+        iv.LabelPlate.Padding = new Thickness(0);
         iv.LabelPlate.Child = _renameBox;
         System.Windows.Controls.Panel.SetZIndex(iv.Root, 10000);
         _renameBox.TextChanged += (_, _) => SizeRenameBox(iv);
+        _renameBox.SizeChanged += (_, _) => SizeRenameBox(iv);
         SizeRenameBox(iv);
         _renameBox.KeyDown += (_, ke) =>
         {
@@ -3282,6 +3287,7 @@ public partial class MainWindow : Window
         iv.LabelPlate.Width = double.NaN;
         iv.LabelPlate.MaxWidth = CellW - 4 * S;
         iv.LabelPlate.Margin = new Thickness(0);
+        iv.LabelPlate.Padding = new Thickness(5 * S, 1, 5 * S, 2);
         System.Windows.Controls.Panel.SetZIndex(iv.Root, 0);
         ApplyCacheMode(iv.Root); // 重命名摘掉的缓存挂回（见 ApplyCacheMode 注释）
     }
@@ -3289,9 +3295,9 @@ public partial class MainWindow : Window
     private void SizeRenameBox(IconVisual iv)
     {
         if (_renameBox == null || _renaming != iv) return;
-        // Negative margins let the editor grow beyond the cell without moving the icon.
+        // Keep the label's original width. Wrap and grow to fit the complete filename.
         double available = RootGrid.ActualWidth > 0 ? RootGrid.ActualWidth : Width;
-        double width = Math.Min(Math.Max(CellW - 4 * S, 320 * S), available);
+        double width = Math.Min(iv.LabelPlate.Width, available);
         _renameBox.MaxWidth = Math.Max(1, width - iv.LabelPlate.Padding.Left - iv.LabelPlate.Padding.Right);
         double left = Canvas.GetLeft(iv.Root);
         if (double.IsNaN(left)) left = 0;
@@ -3300,9 +3306,10 @@ public partial class MainWindow : Window
         iv.LabelPlate.Width = width;
         double top = Canvas.GetTop(iv.Root);
         if (double.IsNaN(top)) top = 0;
+        double screenHeight = RootGrid.ActualHeight > 0 ? RootGrid.ActualHeight : Height;
+        _renameBox.MaxHeight = Math.Max(LabelSize * 2, screenHeight);
         _renameBox.Measure(new System.Windows.Size(_renameBox.MaxWidth, double.PositiveInfinity));
         double editorHeight = _renameBox.DesiredSize.Height + iv.LabelPlate.Padding.Top + iv.LabelPlate.Padding.Bottom;
-        double screenHeight = RootGrid.ActualHeight > 0 ? RootGrid.ActualHeight : Height;
         double editorTop = top + 76 * S;
         double rise = Math.Min(0, screenHeight - editorTop - editorHeight);
         rise = Math.Max(-editorTop, rise);

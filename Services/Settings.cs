@@ -102,11 +102,11 @@ internal sealed class Settings
     public const double DefaultIconLabelSize = 12;
     public double IconLabelSize { get; set; } = DefaultIconLabelSize;
 
-    /// <summary>桌面图标标签字体。从 Windows 已安装字体列表选择；无效名称由 WPF 自动回退。</summary>
-    public string IconFontFamily { get; set; } = "Segoe UI";
+    /// <summary>桌面图标标签字体。默认使用内嵌更纱 UI SC，也可选择 Windows 字体。</summary>
+    public string IconFontFamily { get; set; } = LabelTypography.BundledFontName;
 
-    /// <summary>桌面图标标签字重：regular | semibold | bold。默认保留旧版 bold 观感。</summary>
-    public string IconFontWeight { get; set; } = "bold";
+    /// <summary>桌面图标标签字重：regular | semibold | bold。</summary>
+    public string IconFontWeight { get; set; } = "semibold";
 
     /// <summary>首行下沉：显示网格整体下移默认档半行（56 DIU），给第三方顶部菜单栏类软件
     /// 让出空间，吸顶窗口不再压住首行图标。纯显示层偏移（见 MainWindow.SinkY），不写 Canon，
@@ -220,11 +220,11 @@ internal sealed class Settings
         catch { }
         if (s.WidgetMonoMode is not ("auto" or "mono" or "full")) s.WidgetMonoMode = "auto";
         if (s.DisplayScope is not ("all" or "primary" or "selected")) s.DisplayScope = "all";
-        if (s.IconFontWeight is not ("regular" or "semibold" or "bold")) s.IconFontWeight = "bold";
+        if (s.IconFontWeight is not ("regular" or "semibold" or "bold")) s.IconFontWeight = "semibold";
         s.IconLabelSize = Math.Clamp(s.IconLabelSize, 9, 24);
         if (string.IsNullOrWhiteSpace(s.IconFontFamily) ||
             string.Equals(s.IconFontFamily, "Segoe UI, Microsoft YaHei UI", StringComparison.OrdinalIgnoreCase))
-            s.IconFontFamily = "Segoe UI";
+            s.IconFontFamily = LabelTypography.BundledFontName;
         return s;
     }
 

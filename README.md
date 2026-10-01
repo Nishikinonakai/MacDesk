@@ -88,6 +88,7 @@ the new installer and replaces itself silently, then relaunches.
   entries whose file doesn't exist on the new machine show as macOS-style
   question-mark placeholders — remove them via right-click; MacDesk never
   deletes layout data on its own.
+- **Bundled Sarasa UI SC** — new settings use semibold labels with grayscale antialiasing, without installing a system font. Installed Windows fonts remain selectable, and upgrades preserve existing font choices. Rename editors keep the label width and wrap the full name vertically.
 - **Finder-style labels** — long names truncate in the middle, keeping the
   extension visible.
 - **Clipboard file operations** — Ctrl+C / Ctrl+X / Ctrl+V via the shell

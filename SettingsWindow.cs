@@ -989,21 +989,25 @@ internal sealed class SettingsWindow : Window
             .Distinct(StringComparer.CurrentCultureIgnoreCase)
             .OrderBy(n => n, StringComparer.CurrentCultureIgnoreCase)
             .ToList();
-        foreach (var name in fontNames) fontBox.Items.Add(name);
+        fontNames.RemoveAll(n => string.Equals(n, LabelTypography.BundledFontName, StringComparison.OrdinalIgnoreCase));
+        fontNames.Insert(0, LabelTypography.BundledFontName);
+        foreach (var name in fontNames) fontBox.Items.Add(name == LabelTypography.BundledFontName
+            ? L.T("更纱黑体 UI SC（内嵌默认）", "Sarasa UI SC (bundled default)") : name);
         int fontIndex = fontNames.FindIndex(n => string.Equals(n, Config.IconFontFamily, StringComparison.CurrentCultureIgnoreCase));
-        if (fontIndex < 0) fontIndex = fontNames.FindIndex(n => string.Equals(n, "Segoe UI", StringComparison.OrdinalIgnoreCase));
+        if (fontIndex < 0) fontIndex = 0;
         fontBox.SelectedIndex = Math.Max(0, fontIndex);
         fontBox.SelectionChanged += (_, _) =>
         {
-            if (fontBox.SelectedItem is not string value ||
-                string.Equals(value, Config.IconFontFamily, StringComparison.CurrentCultureIgnoreCase)) return;
+            if (fontBox.SelectedIndex < 0) return;
+            string value = fontNames[fontBox.SelectedIndex];
+            if (string.Equals(value, Config.IconFontFamily, StringComparison.CurrentCultureIgnoreCase)) return;
             Config.IconFontFamily = value;
             Config.Save();
             Desktop.RebuildVisuals();
         };
         sizeSec.Children.Add(Row(L.T("标签字体", "Label Font"), fontBox,
-            L.T("读取 Windows 已安装字体；选择后立即应用。",
-                "Lists fonts installed in Windows; applies immediately when selected.")));
+            L.T("默认使用内嵌更纱黑体；也可选择 Windows 已安装字体，选择后立即应用。",
+                "Uses bundled Sarasa by default; installed Windows fonts remain available. Applies immediately.")));
         sizeSec.Children.Add(Separator());
         var weightBox = new ComboBox { Width = 120, Background = FieldBg, Foreground = TextFg, BorderBrush = FieldBorder };
         var weightKeys = new[] { "regular", "semibold", "bold" };
