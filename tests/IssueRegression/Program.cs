@@ -94,10 +94,25 @@ class Checks
                 var r = (BitmapSource?)Load(red); var b = (BitmapSource?)Load(blue);
                 if (r == null || b == null || ReferenceEquals(r, b)) throw new Exception("Third-party type thumbnail load/cache failed");
                 byte[] rp = new byte[r.PixelWidth * r.PixelHeight * 4], bp = new byte[b.PixelWidth * b.PixelHeight * 4]; r.CopyPixels(rp, r.PixelWidth * 4, 0); b.CopyPixels(bp, b.PixelWidth * 4, 0);
-                int rc = (r.PixelHeight / 2 * r.PixelWidth + r.PixelWidth / 2) * 4;
-                int bc = (b.PixelHeight / 2 * b.PixelWidth + b.PixelWidth / 2) * 4;
-                if (rp[rc + 2] <= rp[rc] || bp[bc] <= bp[bc + 2])
-                    throw new Exception($"Different files did not return distinct content thumbnails: red B/R={rp[rc]}/{rp[rc + 2]}, blue B/R={bp[bc]}/{bp[bc + 2]}, provider={clsid}");
+                (int Red, int Blue) CountColors(BitmapSource source)
+                {
+                    byte[] pixels = new byte[source.PixelWidth * source.PixelHeight * 4];
+                    source.CopyPixels(pixels, source.PixelWidth * 4, 0);
+                    int reds = 0, blues = 0;
+                    for (int i = 0; i < pixels.Length; i += 4)
+                    {
+                        if (pixels[i + 2] > pixels[i] + 50 && pixels[i + 2] > pixels[i + 1] + 50) reds++;
+                        if (pixels[i] > pixels[i + 2] + 50 && pixels[i] > pixels[i + 1] + 50) blues++;
+                    }
+                    return (reds, blues);
+                }
+                var redColors = CountColors(r); var blueColors = CountColors(b);
+                if (redColors.Red <= redColors.Blue || blueColors.Blue <= blueColors.Red)
+                {
+                    string native = Path.Combine(dir, "native.png"); Png(native, 255, 0);
+                    var nativeSource = (BitmapSource?)Load(native);
+                    throw new Exception($"Thumbnail content mismatch: red={redColors}, blue={blueColors}, native PNG={(nativeSource == null ? "null" : CountColors(nativeSource).ToString())}, provider={clsid}");
+                }
                 Console.WriteLine("Unlisted extension with registered provider: two distinct content thumbnails PASS");
             }
             finally { Registry.CurrentUser.DeleteSubKeyTree(keyPath); SHChangeNotify(0x08000000, 0, IntPtr.Zero, IntPtr.Zero); loader.GetMethod("ClearShared", F)!.Invoke(null, null); }
